@@ -10,7 +10,6 @@ All paths are relative to /api/v1/agents (no extra prefix).
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 from datetime import UTC, datetime
 
@@ -285,6 +284,17 @@ async def _create_agent_version(
     ver.required_ide_features = infer_required_features(_VersionProxy(), skill_listings=skill_listings_map)
     ver.inferred_supported_ides = compute_supported_ides(ver.required_ide_features)
 
+    # Backfill yaml_snapshot when the client didn't supply one (web builder
+    # path). Without this the reviewer's diff view is blank for everything
+    # that wasn't published from the CLI.
+    if not ver.yaml_snapshot:
+        # Flush pending AgentComponent/AgentGoalSection rows so the snapshot
+        # builder can re-query them from the session.
+        await db.flush()
+        from services.agent_snapshot import build_yaml_snapshot
+
+        ver.yaml_snapshot = await build_yaml_snapshot(ver, db)
+
     # Pre-generate IDE configs at release time (spec: no generation at request time)
     mcp_comp_ids = [c.component_id for c in req.components if c.component_type == "mcp"]
     mcp_listings_map: dict = {}
@@ -479,55 +489,18 @@ async def _get_version_diff(
     if not ver2:
         raise HTTPException(status_code=404, detail=f"Version {v2!r} not found")
 
-    # Build YAML diff text with resolved component details
-    async def _structural_text(ver: AgentVersion) -> str:
-        # Resolve component names and content from listings
-        comp_details = []
-        if ver.components:
-            from models.hook import HookListing
-            from models.mcp import McpListing
-            from models.prompt import PromptListing
-            from models.sandbox import SandboxListing
-            from models.skill import SkillListing
+    # Build YAML diff text from the snapshot, falling back to a freshly
+    # rendered snapshot for legacy versions whose yaml_snapshot was never
+    # backfilled.
+    from services.agent_snapshot import build_yaml_snapshot
 
-            listing_models = {
-                "mcp": McpListing,
-                "skill": SkillListing,
-                "hook": HookListing,
-                "prompt": PromptListing,
-                "sandbox": SandboxListing,
-            }
-            for c in ver.components:
-                model = listing_models.get(c.component_type)
-                comp_entry: dict = {"type": c.component_type}
-                if model:
-                    listing = (await db.execute(select(model).where(model.id == c.component_id))).scalar_one_or_none()
-                    if listing:
-                        comp_entry["name"] = listing.name
-                        if c.component_type == "prompt":
-                            comp_entry["template"] = getattr(listing, "template", "") or ""
-                        else:
-                            comp_entry["description"] = getattr(listing, "description", "") or ""
-                    else:
-                        comp_entry["name"] = c.component_name or str(c.component_id)[:8]
-                else:
-                    comp_entry["name"] = c.component_name or str(c.component_id)[:8]
-                comp_details.append(comp_entry)
+    async def _snapshot_text(ver: AgentVersion) -> str:
+        if ver.yaml_snapshot:
+            return ver.yaml_snapshot
+        return await build_yaml_snapshot(ver, db)
 
-        data = {
-            "description": ver.description,
-            "prompt": ver.prompt,
-            "model_name": ver.model_name,
-            "model_config_json": ver.model_config_json,
-            "models_by_ide": ver.models_by_ide or {},
-            "supported_ides": ver.supported_ides,
-            "external_mcps": ver.external_mcps,
-            "components": comp_details,
-        }
-        return json.dumps(data, indent=2, default=str)
-
-    text1 = ver1.yaml_snapshot if ver1.yaml_snapshot is not None else await _structural_text(ver1)
-    text2 = ver2.yaml_snapshot if ver2.yaml_snapshot is not None else await _structural_text(ver2)
+    text1 = await _snapshot_text(ver1)
+    text2 = await _snapshot_text(ver2)
 
     yaml_diff = "\n".join(
         line.rstrip("\n")

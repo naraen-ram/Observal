@@ -378,6 +378,13 @@ async def create_agent(
     version.required_ide_features = infer_required_features(_AgentProxy(), skill_listings=skill_listings_map)
     version.inferred_supported_ides = compute_supported_ides(version.required_ide_features)
 
+    # Flush pending AgentComponent + goal rows so the snapshot builder picks
+    # them up via its own SELECTs (the relationship cache is empty).
+    await db.flush()
+    from services.agent_snapshot import build_yaml_snapshot
+
+    version.yaml_snapshot = await build_yaml_snapshot(version, db)
+
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -1476,6 +1483,11 @@ async def save_draft(
     version.required_ide_features = infer_required_features(_DraftProxy(), skill_listings=skill_listings_map_draft)
     version.inferred_supported_ides = compute_supported_ides(version.required_ide_features)
 
+    await db.flush()
+    from services.agent_snapshot import build_yaml_snapshot
+
+    version.yaml_snapshot = await build_yaml_snapshot(version, db)
+
     await db.commit()
     agent = await _load_agent(db, str(agent.id))
     await audit(
@@ -1583,6 +1595,12 @@ async def update_draft(
         if val is not None:
             setattr(agent, field, val)
 
+    # Always rebuild the snapshot so reviewers see the latest state including
+    # per-IDE model overrides, prompt edits, and component swaps.
+    from services.agent_snapshot import build_yaml_snapshot
+
+    version.yaml_snapshot = await build_yaml_snapshot(version, db)
+
     await db.commit()
     agent = await _load_agent(db, str(agent.id))
     if agent.status == AgentStatus.pending:
@@ -1684,6 +1702,11 @@ async def submit_draft(
     if agent.latest_version:
         flags = scan_for_gaming(agent.latest_version.prompt)
         agent.latest_version.gaming_flags = summarize_flags(flags)
+        # Defensive refresh — covers older drafts created before snapshot
+        # backfill landed and guarantees the reviewer sees current state.
+        from services.agent_snapshot import build_yaml_snapshot
+
+        agent.latest_version.yaml_snapshot = await build_yaml_snapshot(agent.latest_version, db)
 
     agent.status = AgentStatus.pending
     await db.commit()

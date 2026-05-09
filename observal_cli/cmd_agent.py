@@ -644,6 +644,9 @@ def agent_init(
         "description": description,
         "owner": owner,
         "model_name": model_name,
+        # Optional per-IDE model overrides, e.g. {"kiro": "claude-haiku-4-5"}.
+        # Leave empty to use model_name everywhere that accepts a model choice.
+        "models_by_ide": {},
         "prompt": prompt_text,
         "supported_ides": list(VALID_IDES),
         "components": [],
@@ -765,6 +768,7 @@ def agent_publish(
         "description": data.get("description", ""),
         "owner": data.get("owner", ""),
         "model_name": data.get("model_name", "claude-sonnet-4"),
+        "models_by_ide": data.get("models_by_ide", {}) or {},
         "prompt": data.get("prompt", ""),
         "supported_ides": data.get("supported_ides", []),
         "components": data.get("components", []),
@@ -863,6 +867,7 @@ def agent_release(
         "prompt": data.get("prompt", ""),
         "model_name": data.get("model_name", "claude-sonnet-4"),
         "model_config_json": data.get("model_config_json"),
+        "models_by_ide": data.get("models_by_ide", {}) or {},
         "external_mcps": data.get("external_mcps"),
         "supported_ides": data.get("supported_ides", []),
         "components": data.get("components", []),

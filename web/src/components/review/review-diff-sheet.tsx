@@ -264,6 +264,14 @@ function DiffDialogBody({
   // Prefer version detail fields over the sparse review item fields
   const prompt = (detail?.prompt as string) || item.prompt || "";
   const modelName = (detail?.model_name as string) || item.model_name || "";
+  const modelsByIdeRaw = detail?.models_by_ide;
+  const modelsByIde =
+    modelsByIdeRaw && typeof modelsByIdeRaw === "object" && !Array.isArray(modelsByIdeRaw)
+      ? (modelsByIdeRaw as Record<string, string>)
+      : {};
+  const modelsByIdeEntries = Object.entries(modelsByIde).filter(
+    ([, value]) => typeof value === "string" && value.trim().length > 0,
+  );
   const supportedIdes = (detail?.supported_ides as string[]) || item.supported_ides || [];
   const components = (detail?.components as { component_type: string; component_id: string; name?: string; template?: string; description?: string; category?: string }[]) || item.components || [];
 
@@ -354,14 +362,31 @@ function DiffDialogBody({
             </div>
 
             {/* Model */}
-            {modelName && (
+            {(modelName || modelsByIdeEntries.length > 0) && (
               <>
                 <Separator />
                 <div className="space-y-2">
                   <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                     Model
                   </h4>
-                  <p className="text-xs font-[family-name:var(--font-mono)]">{modelName}</p>
+                  {modelName && (
+                    <p className="text-xs font-[family-name:var(--font-mono)]">{modelName}</p>
+                  )}
+                  {modelsByIdeEntries.length > 0 && (
+                    <dl className="space-y-1 text-xs">
+                      <dt className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        Per-IDE overrides
+                      </dt>
+                      {modelsByIdeEntries.map(([ide, value]) => (
+                        <div key={ide} className="flex items-baseline gap-2">
+                          <dd className="font-medium">{ide}</dd>
+                          <dd className="font-[family-name:var(--font-mono)] text-muted-foreground">
+                            {value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
                 </div>
               </>
             )}
@@ -562,6 +587,9 @@ function DiffDialogBody({
                               description: item.description || undefined,
                               prompt: prompt || undefined,
                               model_name: modelName || undefined,
+                              models_by_ide: modelsByIdeEntries.length
+                                ? Object.fromEntries(modelsByIdeEntries)
+                                : undefined,
                               supported_ides: supportedIdes.length ? supportedIdes : undefined,
                               components: components.length
                                 ? components.map((c) => `${c.component_type}:${c.component_id}`)

@@ -157,6 +157,7 @@ class TestDraftSave:
     """Test creating a new draft agent."""
 
     @pytest.mark.asyncio
+    @patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot"))
     @patch("api.routes.agent._load_agent")
     async def test_creates_agent_with_draft_status(self, mock_load):
         """POST /agents/draft creates an agent in draft status."""
@@ -177,6 +178,7 @@ class TestDraftSave:
         db.commit.assert_awaited()
 
     @pytest.mark.asyncio
+    @patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot"))
     @patch("api.routes.agent._load_agent")
     async def test_response_includes_agent_fields(self, mock_load):
         """Draft response includes id, name, and status fields."""
@@ -206,6 +208,7 @@ class TestDraftUpdate:
     """Test updating a draft agent."""
 
     @pytest.mark.asyncio
+    @patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot"))
     @patch("api.routes.agent._load_agent")
     async def test_updates_draft_fields(self, mock_load):
         """PUT /agents/{id}/draft updates the draft agent."""
@@ -267,6 +270,7 @@ class TestDraftSubmit:
     """Test submitting a draft for review."""
 
     @pytest.mark.asyncio
+    @patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot"))
     @patch("api.routes.agent.emit_registry_event")
     @patch("api.routes.agent._resolve_component_names")
     @patch("api.routes.agent._load_agent")
@@ -286,6 +290,7 @@ class TestDraftSubmit:
         db.commit.assert_awaited()
 
     @pytest.mark.asyncio
+    @patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot"))
     @patch("api.routes.agent.emit_registry_event")
     @patch("api.routes.agent._resolve_component_names")
     @patch("api.routes.agent._load_agent")

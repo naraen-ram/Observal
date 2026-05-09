@@ -319,6 +319,7 @@ async def test_create_version_happy_path():
         patch("api.routes.agent_versions.compute_supported_ides", return_value=["claude-code"]),
         patch("api.routes.agent_versions.generate_agent_config", return_value={"mcpServers": {}}),
         patch("api.routes.agent_versions.audit", new=AsyncMock()),
+        patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot")),
     ):
         result = await _create_agent_version(
             agent_id=str(agent.id),
@@ -473,6 +474,7 @@ async def test_create_version_co_maintainer_allowed():
         patch("api.routes.agent_versions.compute_supported_ides", return_value=[]),
         patch("api.routes.agent_versions.generate_agent_config", return_value={}),
         patch("api.routes.agent_versions.audit", new=AsyncMock()),
+        patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot")),
     ):
         result = await _create_agent_version(
             agent_id=str(agent.id),
@@ -521,6 +523,7 @@ async def test_create_version_warns_multiple_pending():
         patch("api.routes.agent_versions.compute_supported_ides", return_value=[]),
         patch("api.routes.agent_versions.generate_agent_config", return_value={}),
         patch("api.routes.agent_versions.audit", new=AsyncMock()),
+        patch("services.agent_snapshot.build_yaml_snapshot", new=AsyncMock(return_value="snapshot")),
     ):
         result = await _create_agent_version(
             agent_id=str(agent.id),

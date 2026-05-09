@@ -251,6 +251,28 @@ def _parse_model_overrides(values: list[str]) -> tuple[str | None, dict[str, str
     return default, overrides
 
 
+def _agent_saved_model(agent_detail: dict | None, ide: str) -> str | None:
+    """Return the model the *agent* has saved for *ide*, if any.
+
+    Per-IDE override wins; otherwise the legacy ``model_name`` is used as
+    the implicit default for Claude Code only. Mirrors the server-side
+    ``services.model_resolver._candidate_for_ide`` rules so the CLI never
+    re-prompts when the author has already chosen a model.
+    """
+    if not agent_detail:
+        return None
+    raw = agent_detail.get("models_by_ide") if isinstance(agent_detail, dict) else None
+    if isinstance(raw, dict):
+        candidate = raw.get(ide)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    if ide in ("claude-code", "claude_code"):
+        legacy = agent_detail.get("model_name") if isinstance(agent_detail, dict) else None
+        if isinstance(legacy, str) and legacy.strip():
+            return legacy.strip()
+    return None
+
+
 def _collect_install_options(
     ide: str,
     *,
@@ -260,6 +282,7 @@ def _collect_install_options(
     tools: str | None,
     no_prompt: bool,
     refresh_models: bool = False,
+    agent_detail: dict | None = None,
 ) -> dict:
     """Interactively collect IDE-specific install options.
 
@@ -267,11 +290,17 @@ def _collect_install_options(
     what's missing when running in an interactive terminal and ``--no-prompt``
     isn't set. The model picker now consults the live catalog (``GET /api/v1/models``)
     instead of a hardcoded list.
+
+    When the agent already has a saved model for the target IDE (set in the
+    builder) and the user didn't pass ``--model``, the saved value is used
+    silently — the picker is skipped so authoring decisions aren't undone
+    by a stray Enter at the prompt.
     """
     import sys
 
     from observal_cli.ide_registry import accepts_model_choice
     from observal_cli.prompts import select_one
+    from observal_cli.render import format_model as _format_model
 
     opts: dict = {}
     interactive = sys.stdin.isatty() and not no_prompt
@@ -288,8 +317,21 @@ def _collect_install_options(
 
     if accepts_model_choice(ide):
         explicit = model_overrides.get(ide) or model_default
+        saved = _agent_saved_model(agent_detail, ide)
         if explicit:
             opts["model"] = explicit
+        elif saved:
+            try:
+                primary, _secondary, _ = _format_model({"model_id": saved})
+                pretty = primary or saved
+            except Exception:
+                pretty = saved
+            rprint(f"  [dim]Model:[/dim] {pretty} [dim](from agent)[/dim]")
+            # Pass through the saved value so the server records the same
+            # choice on the install download record. The resolver still
+            # validates the candidate against the live catalog and falls
+            # back gracefully if needed.
+            opts["model"] = saved
         elif interactive:
             from observal_cli import model_catalog as _catalog
 
@@ -373,6 +415,7 @@ def register_pull(app: typer.Typer):
             tools=tools,
             no_prompt=no_prompt,
             refresh_models=refresh_models,
+            agent_detail=agent_detail,
         )
         is_user_scope = options.get("scope") == "user"
         if is_user_scope:
