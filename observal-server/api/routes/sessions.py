@@ -210,8 +210,7 @@ async def sessions_summary(
         "FROM ( "
         "  SELECT session_id, max(last_event_time) AS last_event_time "
         "  FROM session_stats_agg "
-        "  WHERE session_id != '' " + user_filter +
-        "  GROUP BY session_id "
+        "  WHERE session_id != '' " + user_filter + "  GROUP BY session_id "
         ")",
         params or None,
     )

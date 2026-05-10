@@ -676,23 +676,32 @@ async def _ev_per_session_tokens(agent_id: str, start: str, end: str) -> list[di
 
 
 async def _ev_session_details(agent_id: str, start: str, end: str) -> list[dict]:
-    """Per-session details using materialized token columns."""
+    """Per-session details from session_stats_agg.
+
+    prompt_count / tool_call_count are materialized sums in the MV;
+    duration_seconds is computed from first_event_time / last_event_time.
+    No FINAL scan on session_events needed.
+    """
     _query = get_query()
     sql = """
         SELECT
             session_id,
-            dateDiff('second', min(timestamp), max(timestamp)) AS duration_seconds,
-            countIf(event_type = 'user_prompt') AS prompt_count,
-            countIf(event_type = 'tool_call')   AS tool_call_count,
-            sum(input_tokens)              AS input_tokens,
-            sum(output_tokens)             AS output_tokens,
-            any(ide)                       AS session_ide,
-            any(parent_session_id)         AS session_parent_id
-        FROM session_events FINAL
+            dateDiff(
+                'second',
+                min(first_event_time),
+                max(last_event_time)
+            )                          AS duration_seconds,
+            sum(prompt_count)          AS prompt_count,
+            sum(tool_call_count)       AS tool_call_count,
+            sum(input_tokens)          AS input_tokens,
+            sum(output_tokens)         AS output_tokens,
+            anyLast(ide)               AS session_ide,
+            anyLast(parent_session_id) AS session_parent_id
+        FROM session_stats_agg
         WHERE agent_id = {agent_id:String}
-          AND timestamp BETWEEN {t_start:String} AND {t_end:String}
+          AND last_event_time BETWEEN {t_start:String} AND {t_end:String}
         GROUP BY session_id
-        ORDER BY min(timestamp) DESC
+        ORDER BY min(first_event_time) DESC
         LIMIT 200
         FORMAT JSON
     """
