@@ -360,7 +360,10 @@ INIT_SQL = [
     ORDER BY (ServiceName, SeverityText, toUnixTimestamp(Timestamp), TraceId)""",
     # Subagent attribution: link subagent sessions to their parent session
     """ALTER TABLE session_events ADD COLUMN IF NOT EXISTS parent_session_id Nullable(String)""",
-    """ALTER TABLE session_events ADD INDEX IF NOT EXISTS idx_se_parent_session_id parent_session_id TYPE bloom_filter(0.01) GRANULARITY 1""",
+    # set(0) on parent_session_id: the column is sparse (most rows NULL) and queried
+    # only by equality. bloom_filter loses probability mass to NULLs on Nullable columns;
+    # set(0) is exact-match with unlimited cardinality — ideal for sparse equality lookups.
+    """ALTER TABLE session_events ADD INDEX IF NOT EXISTS idx_se_parent_session_id parent_session_id TYPE set(0) GRANULARITY 1""",
     # Materialized token / model columns — extract at ingest, avoid JSONExtract at query time.
     # Default 0 / '' so existing rows remain queryable without rewriting.
     """ALTER TABLE session_events ADD COLUMN IF NOT EXISTS input_tokens Int32 DEFAULT 0""",
@@ -440,6 +443,13 @@ INIT_SQL = [
     # bloom_filter on low-cardinality columns wastes probability mass and adds write overhead.
     """ALTER TABLE session_events DROP INDEX IF EXISTS idx_se_event_type""",
     """ALTER TABLE session_events ADD INDEX IF NOT EXISTS idx_se_event_type event_type TYPE set(20) GRANULARITY 1""",
+    # Migrate parent_session_id skip index from bloom_filter -> set(0).
+    # Nullable column where most rows are NULL; bloom_filter on Nullable spreads
+    # probability mass across NULL entries causing elevated false-positive rates.
+    # set(0) stores exact values per block with no size cap — correct for equality
+    # lookups like WHERE parent_session_id = {sid} used in subagent fetches.
+    """ALTER TABLE session_events DROP INDEX IF EXISTS idx_se_parent_session_id""",
+    """ALTER TABLE session_events ADD INDEX IF NOT EXISTS idx_se_parent_session_id parent_session_id TYPE set(0) GRANULARITY 1""",
 ]
 
 
