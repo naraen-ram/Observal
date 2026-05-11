@@ -47,7 +47,8 @@ INSERT_ORDER: list[str] = [
     # NOTE: listings/agents have a circular FK with their version tables:
     #   *_listings.latest_version_id → *_versions.id (nullable, use_alter)
     #   *_versions.listing_id → *_listings.id (NOT NULL)
-    # We break the cycle by nulling latest_version_id during insert (see DEFERRED_VERSION_BACKFILL).
+    # The cycle is broken during import by disabling trigger-based FK enforcement
+    # via session_replication_role = 'replica' (see _import_archive).
     "mcp_listings",
     "skill_listings",
     "hook_listings",
@@ -90,18 +91,6 @@ INSERT_ORDER: list[str] = [
     # Tier 11 — FK to scorecards + penalty_definitions
     "scorecard_dimensions",
     "trace_penalties",
-]
-
-# Tables with a circular latest_version_id FK that must be nulled during insert
-# and backfilled after version tables are imported.
-# Format: (table, version_table, fk_column)
-DEFERRED_VERSION_BACKFILL: list[tuple[str, str, str]] = [
-    ("mcp_listings", "mcp_versions", "latest_version_id"),
-    ("skill_listings", "skill_versions", "latest_version_id"),
-    ("hook_listings", "hook_versions", "latest_version_id"),
-    ("prompt_listings", "prompt_versions", "latest_version_id"),
-    ("sandbox_listings", "sandbox_versions", "latest_version_id"),
-    ("agents", "agent_versions", "latest_version_id"),
 ]
 
 JSONB_COLUMNS: dict[str, list[str]] = {
@@ -799,11 +788,6 @@ async def _import_archive(db_url: str, archive_path: Path, normalize_org_id: str
                 )
             }
 
-            # Build set of tables that need latest_version_id nulled during insert
-            deferred_tables: dict[str, set[str]] = {}
-            for tbl, _ver_tbl, fk_col in DEFERRED_VERSION_BACKFILL:
-                deferred_tables.setdefault(tbl, set()).add(fk_col)
-
             # Org ID normalization: detect source org(s) and build rewrite map
             org_rewrite_map: dict[str, str] = {}
             if normalize_org_id:
@@ -824,41 +808,48 @@ async def _import_archive(db_url: str, archive_path: Path, normalize_org_id: str
             # Columns that hold org references and should be rewritten
             org_columns = {"org_id", "owner_org_id"}
 
-            # Temporarily disable FK checks for clean bulk import
+            # Disable all user-defined triggers (including FK constraint triggers)
+            # for the duration of the bulk import. This is necessary because
+            # listings and their version tables have circular FKs that cannot be
+            # satisfied in any single insert order. The reset is in a finally
+            # block to ensure it runs even if the import raises.
+            # NOTE: This also disables updated_at triggers and audit triggers.
+            # On managed Postgres (RDS without rds_superuser, Cloud SQL) this
+            # requires elevated role membership.
             await conn.execute("SET session_replication_role = 'replica'")
+            try:
+                for table in INSERT_ORDER:
+                    jsonl_path = staging_dir / "pg" / f"{table}.jsonl"
 
-            for table in INSERT_ORDER:
-                jsonl_path = staging_dir / "pg" / f"{table}.jsonl"
+                    # Skip tables that don't exist on target
+                    if table not in existing_tables:
+                        rprint(f"[dim]  Skipping {table} (table does not exist on target)[/dim]")
+                        rows_inserted[table] = 0
+                        rows_skipped[table] = 0
+                        continue
 
-                # Skip tables that don't exist on target
-                if table not in existing_tables:
-                    rprint(f"[dim]  Skipping {table} (table does not exist on target)[/dim]")
-                    rows_inserted[table] = 0
-                    rows_skipped[table] = 0
-                    continue
+                    # Skip tables not present in the archive (older export)
+                    if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
+                        rows_inserted[table] = 0
+                        rows_skipped[table] = 0
+                        continue
 
-                # Skip tables not present in the archive (older export)
-                if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
-                    rows_inserted[table] = 0
-                    rows_skipped[table] = 0
-                    continue
+                    # Get column types for proper coercion
+                    col_types = await _get_column_types(conn, table)
 
-                # Get column types for proper coercion
-                col_types = await _get_column_types(conn, table)
-
-                ins, sk = await _insert_table(
-                    conn,
-                    table,
-                    jsonl_path,
-                    col_types,
-                    org_rewrite_map=org_rewrite_map,
-                    org_columns=org_columns,
-                )
-                rows_inserted[table] = ins
-                rows_skipped[table] = sk
-
-            # Re-enable FK checks
-            await conn.execute("SET session_replication_role = 'origin'")
+                    ins, sk = await _insert_table(
+                        conn,
+                        table,
+                        jsonl_path,
+                        col_types,
+                        org_rewrite_map=org_rewrite_map,
+                        org_columns=org_columns,
+                    )
+                    rows_inserted[table] = ins
+                    rows_skipped[table] = sk
+            finally:
+                # Always restore default trigger behavior, even on error
+                await conn.execute("SET session_replication_role = 'origin'")
 
             # Post-import fixup: backfill NULL owner_org_id from creator's org
             _org_backfill = [
