@@ -28,7 +28,7 @@ observal support bundle [--output <path>] [--logs-since <duration>] [--include-s
 | Option | Short | Default | Description |
 | --- | --- | --- | --- |
 | `--output` | `-o` | `./observal-support-{timestamp}.tar.gz` | Archive output path |
-| `--logs-since` | — | `1h` | Duration of logs to include (e.g. `1h`, `30m`, `2d`) |
+| `--logs-since` | — | `1h` | Duration of logs to include (e.g. `30s`, `30m`, `1h`, `2d`, `1h30m`) |
 | `--include-system` / `--no-include-system` | — | enabled | Include OS/CPU/memory/disk metrics |
 
 ### What it collects
@@ -177,7 +177,7 @@ observal support inspect <bundle-path> [--show <file>]
 
 1. The full bundle manifest as formatted JSON (metadata, collector results, redaction counts).
 2. A tree view of all files in the archive with human-readable sizes.
-3. If `--show` is specified, the raw contents of that file.
+3. If `--show` is specified, the raw contents of that file. If the file is not found in the archive, the command prints the list of available files and exits with code 1.
 
 ### Schema version compatibility
 
@@ -279,7 +279,7 @@ Support bundles are designed to be safe to share with third parties:
 
 The CLI calls `POST /api/v1/support/collect` on the Observal server. This endpoint:
 
-* Requires authentication (API key via `X-API-Key` header).
+* Requires authentication (Bearer token via `Authorization` header).
 * Is rate-limited to 5 requests per minute.
 * Runs each collector with a 10-second timeout.
 * Returns partial results on collector failure (always HTTP 200 if at least one collector succeeds).
