@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026-present Observal (BlazeUp AI LLP)
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """Add insight_reports, insight_session_facets, insight_session_meta tables.
 
 Revision ID: 0005

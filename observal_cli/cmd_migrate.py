@@ -319,7 +319,7 @@ def _safe_tar_extract(tar: tarfile.TarFile, dest: Path) -> None:
             if member.issym() or member.islnk():
                 msg = f"Tar member {member.name!r} is a symlink (rejected for safety)"
                 raise ValueError(msg)
-        tar.extractall(dest)
+        tar.extractall(dest)  # nosec B202 — path traversal validated above
 
 
 def _parse_clickhouse_url(url: str) -> tuple[str, str, str, str]:
