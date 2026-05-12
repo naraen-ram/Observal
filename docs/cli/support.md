@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026-present Observal (BlazeUp AI LLP)
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+
 # observal support
 
 Generate and inspect diagnostic support bundles. Bundles contain **no customer data or row contents** — only aggregate counts, version info, sanitised configuration, health probes, and optional system metrics.
