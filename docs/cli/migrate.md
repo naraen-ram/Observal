@@ -10,7 +10,7 @@ Portable migration tools for moving an Observal instance between environments. T
 
 Phase 2 depends on Phase 1. You must complete the shallow copy export and import before running the deep copy.
 
-All migrate commands require **admin** or **super_admin** role.
+All migrate commands require **super_admin** role.
 
 ### Prerequisites
 
@@ -480,5 +480,5 @@ If you encounter a permission error during import, ask your DBA to grant the app
 
 ## Related
 
-* [`observal admin`](admin.md) — admin commands (required role for migrate)
-* [`observal auth`](auth.md) — authentication (must be logged in as admin)
+* [`observal admin`](admin.md) — admin commands
+* [`observal auth`](auth.md) — authentication (must be logged in as super_admin)

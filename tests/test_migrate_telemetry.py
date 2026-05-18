@@ -633,12 +633,12 @@ class TestSecurity:
 
 
 class TestAdminRoleGateProperty:
-    """Property 1: Only admin and super_admin roles pass the gate.
+    """Property 1: Only super_admin role passes the gate.
 
     **Validates: Requirements 1.5**
     """
 
-    ALLOWED_ROLES = {"admin", "super_admin"}
+    ALLOWED_ROLES = {"super_admin"}
 
     @given(
         role=st.text(

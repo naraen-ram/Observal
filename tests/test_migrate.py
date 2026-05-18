@@ -237,9 +237,10 @@ class TestBuildSelect:
 
 class TestRequireAdmin:
     @patch("observal_cli.cmd_migrate.client")
-    def test_admin_role_allowed(self, mock_client):
+    def test_admin_role_rejected(self, mock_client):
         mock_client.get.return_value = {"role": "admin"}
-        _require_admin()  # Should not raise
+        with pytest.raises((SystemExit, click.exceptions.Exit)):
+            _require_admin()
 
     @patch("observal_cli.cmd_migrate.client")
     def test_super_admin_role_allowed(self, mock_client):
@@ -988,9 +989,9 @@ class TestMigrationIdConsistencyProperty:
 
 
 class TestAdminRoleGateProperty:
-    """Property 10: Only admin and super_admin roles pass the gate."""
+    """Property 10: Only super_admin role passes the gate."""
 
-    ALLOWED_ROLES = {"admin", "super_admin"}
+    ALLOWED_ROLES = {"super_admin"}
 
     @given(role=st.sampled_from(["admin", "super_admin", "user", "reviewer", "", "moderator", "guest", "operator"]))
     @hsettings(max_examples=100)
