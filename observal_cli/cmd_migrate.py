@@ -256,7 +256,7 @@ class TelemetryValidationResult:
 
 
 def _require_admin() -> None:
-    """Verify the current user has admin or super_admin role. Exit if not."""
+    """Verify the current super_admin role. Exit if not."""
     try:
         user = client.get("/api/v1/auth/whoami")
     except SystemExit as exc:
@@ -264,8 +264,8 @@ def _require_admin() -> None:
         rprint("[dim]  Run [bold]observal auth login[/bold] first.[/dim]")
         raise typer.Exit(1) from exc
     role = user.get("role", "")
-    if role not in ("admin", "super_admin"):
-        rprint("[red]Permission denied.[/red] The migrate command requires admin or super_admin role.")
+    if role not in ("super_admin"):
+        rprint("[red]Permission denied.[/red] The migrate command requires super_admin role.")
         rprint(f"[dim]  Current role: {role}[/dim]")
         raise typer.Exit(1)
 
