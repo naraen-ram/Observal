@@ -401,41 +401,73 @@ FK validation:
 
 ## Full Migration Workflow
 
-A complete environment migration from source to target:
+A complete environment migration from source to target, step by step.
+
+### Prerequisites
 
 ```bash
-# 1. Export PostgreSQL registry (shallow copy)
+# Ensure you're logged in as admin on the target
+observal auth whoami
+
+# Get the target org ID (needed for --org-id and --project-id)
+docker exec <target-db-container> psql -U postgres -d observal \
+  -c "SELECT id FROM organizations LIMIT 1;" -t
+```
+
+Save the org ID — you'll use it in steps 2 and 5.
+
+### Phase 1: Shallow Copy (PostgreSQL registry data)
+
+```bash
+# Step 1: Export from source
 observal migrate export \
-  --db-url "postgresql://user:pass@source-host:5432/observal" \
-  --output ./migration/registry.tar.gz
+  --db-url <source-postgres-url> \
+  --output ./migration/export.tar.gz
 
-# 2. Import into target PostgreSQL
+# Step 2: Import into target (with org remapping)
 observal migrate import \
-  --db-url "postgresql://user:pass@target-host:5432/observal" \
-  --archive ./migration/registry.tar.gz
+  --db-url <target-postgres-url> \
+  --archive ./migration/export.tar.gz \
+  --org-id <target-org-id>
 
-# 3. Validate the import
+# Step 3: Validate
 observal migrate validate \
-  --archive ./migration/registry.tar.gz \
-  --db-url "postgresql://user:pass@target-host:5432/observal"
+  --archive ./migration/export.tar.gz \
+  --db-url <target-postgres-url>
+```
 
-# 4. Export ClickHouse telemetry (deep copy)
+### Phase 2: Deep Copy (ClickHouse telemetry data)
+
+```bash
+# Step 4: Export telemetry from source
 observal migrate export-telemetry \
-  --clickhouse-url "clickhouse://default:pass@source-host:8123/observal" \
-  --manifest ./migration/registry.manifest.json \
+  --clickhouse-url <source-clickhouse-url> \
+  --manifest ./migration/export.manifest.json \
   --output-dir ./migration/telemetry/
 
-# 5. Import telemetry into target ClickHouse
+# Step 5: Import telemetry into target (with project_id remapping)
 observal migrate import-telemetry \
-  --clickhouse-url "clickhouse://default:pass@target-host:8123/observal" \
-  --input-dir ./migration/telemetry/
+  --clickhouse-url <target-clickhouse-url> \
+  --input-dir ./migration/telemetry/ \
+  --project-id <target-org-id>
 
-# 6. Validate telemetry with FK cross-check
+# Step 6: Validate telemetry
 observal migrate validate-telemetry \
   --input-dir ./migration/telemetry/ \
-  --clickhouse-url "clickhouse://default:pass@target-host:8123/observal" \
-  --target-db-url "postgresql://user:pass@target-host:5432/observal"
+  --clickhouse-url <target-clickhouse-url>
 ```
+
+### Verify
+
+```bash
+# Check agents are visible
+observal agent list
+
+# Check telemetry landed
+observal ops traces --limit 5
+```
+
+> **Note:** The `--org-id` and `--project-id` flags use the same value — your target org UUID. This ensures all imported data (PostgreSQL and ClickHouse) is scoped to the correct org and visible in the UI.
 
 ## Connection String Formats
 
