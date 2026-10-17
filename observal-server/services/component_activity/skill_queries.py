@@ -20,6 +20,7 @@ from observal_shared.harness_registry import HARNESS_REGISTRY
 from schemas.component_activity import (
     SKILL_AVAILABILITY_LIMITATION,
     SKILL_INVOCATIONS_LIMITATION,
+    SKILL_LOADS_LIMITATION,
     PresenceCoverage,
     ProjectionCoverage,
     SkillActivityCoverage,
@@ -95,6 +96,8 @@ _SKILL_SUMMARY = (
     """SELECT countIf(supported) AS supported_present_sessions,
            countIf(NOT supported) AS unsupported_present_sessions,
            countIf(projection_state = 'complete') AS projection_complete_sessions,
+           countIf(projection_state = 'complete' AND has({use_capable:Array(String)}, harness))
+               AS usage_measurable_sessions,
            countIf(projection_state = 'pending') AS projection_pending_sessions,
            countIf(projection_state = 'failed') AS projection_failed_sessions,
            countIf(projection_state = 'stale') AS projection_stale_sessions,
@@ -136,6 +139,13 @@ def _params(
         "param_component_version": component_version or "",
         "param_projection_version": publication_version(),
         "param_supported": _clickhouse_array(skill_supported_harnesses()),
+        "param_use_capable": _clickhouse_array(
+            [
+                name
+                for name in skill_supported_harnesses()
+                if kind_recorded(name, "load") or kind_recorded(name, "invoked")
+            ]
+        ),
         "param_max_source_records": MAX_SOURCE_RECORDS,
         "param_max_source_bytes": MAX_SOURCE_BYTES,
     }
@@ -152,7 +162,12 @@ def build_skill_coverage(presence: dict, aggregate: dict, version: int) -> Skill
         publication_version=version,
     )
     evidence = SkillEvidenceCoverage(**{key: _int(aggregate, key) for key in SkillEvidenceCoverage.model_fields})
-    denominator = projection.projection_complete_sessions
+    # A complete availability-only projection is not a denominator for use.
+    denominator = (
+        _int(aggregate, "usage_measurable_sessions")
+        if "usage_measurable_sessions" in aggregate
+        else (projection.projection_complete_sessions)
+    )
     observed = _int(aggregate, "observed_sessions")
     reasons: list[str] = []
     if presence_block.present_sessions == 0:
@@ -174,6 +189,8 @@ def build_skill_coverage(presence: dict, aggregate: dict, version: int) -> Skill
         reasons.append("unattributed_skill_facts")
     if evidence.unknown_load_results:
         reasons.append("unconfirmed_load_attempts")
+    if projection.projection_complete_sessions > denominator:
+        reasons.append("availability_only_harness_sessions")
     state = "observed" if observed else "no_observed_skill_use" if denominator else "attribution_not_possible"
     return SkillActivityCoverage(
         presence=presence_block,
@@ -213,22 +230,27 @@ async def skill_activity_summary(
     # A kind is measurable only on harnesses that record it; elsewhere it is
     # unknown, never a measured zero. A mixed cohort's count is partial.
     recorded: dict[str, bool] = {}
-    for kind, limitation in (("available", SKILL_AVAILABILITY_LIMITATION), ("invoked", SKILL_INVOCATIONS_LIMITATION)):
+    for kind, limitation in (
+        ("available", SKILL_AVAILABILITY_LIMITATION),
+        ("load", SKILL_LOADS_LIMITATION),
+        ("invoked", SKILL_INVOCATIONS_LIMITATION),
+    ):
         recording = [kind_recorded(harness, kind) for harness in distribution]
         recorded[kind] = any(recording)
         if not recorded[kind]:
             coverage.limitations.append(limitation)
         elif not all(recording):
             coverage.reasons.append(f"{kind}_not_recorded_on_some_harnesses")
+    projected = coverage.projection.projection_complete_sessions > 0
     return {
         "present_sessions": coverage.presence.present_sessions,
         "present_users": coverage.presence.present_users,
-        "available_sessions": _int(aggregate, "available_sessions") if recorded["available"] else None,
-        "loaded_sessions": _int(aggregate, "loaded_sessions"),
-        "confirmed_loads": _int(aggregate, "total_confirmed_loads"),
-        "load_attempts": _int(aggregate, "total_load_attempts"),
-        "invoked_sessions": _int(aggregate, "invoked_sessions") if recorded["invoked"] else None,
-        "invocations": _int(aggregate, "total_invocations") if recorded["invoked"] else None,
+        "available_sessions": _int(aggregate, "available_sessions") if projected and recorded["available"] else None,
+        "loaded_sessions": _int(aggregate, "loaded_sessions") if projected and recorded["load"] else None,
+        "confirmed_loads": _int(aggregate, "total_confirmed_loads") if projected and recorded["load"] else None,
+        "load_attempts": _int(aggregate, "total_load_attempts") if projected and recorded["load"] else None,
+        "invoked_sessions": _int(aggregate, "invoked_sessions") if projected and recorded["invoked"] else None,
+        "invocations": _int(aggregate, "total_invocations") if projected and recorded["invoked"] else None,
         "harness_distribution": distribution,
         "version_distribution": versions,
         "activation_actions": {
@@ -278,13 +300,17 @@ async def skill_activity_sessions(
                 "last_event_time": str(row["last_event_time"]),
                 "projection_state": row["projection_state"],
                 "source_state": row["source_state"],
-                "available": (complete and _int(row, "available_facts") > 0)
-                if kind_recorded(row["harness"], "available")
+                "available": (_int(row, "available_facts") > 0)
+                if complete and kind_recorded(row["harness"], "available")
                 else None,
-                "confirmed_loads": _int(row, "confirmed_loads") if complete else 0,
-                "load_attempts": _int(row, "load_attempts") if complete else 0,
-                "invocations": (_int(row, "invocations") if complete else 0)
-                if kind_recorded(row["harness"], "invoked")
+                "confirmed_loads": _int(row, "confirmed_loads")
+                if complete and kind_recorded(row["harness"], "load")
+                else None,
+                "load_attempts": _int(row, "load_attempts")
+                if complete and kind_recorded(row["harness"], "load")
+                else None,
+                "invocations": _int(row, "invocations")
+                if complete and kind_recorded(row["harness"], "invoked")
                 else None,
             }
         )

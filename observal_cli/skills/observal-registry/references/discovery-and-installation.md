@@ -79,6 +79,9 @@ Choose the exact harness and scope before writing files.
 ```bash
 observal registry mcp install NAMESPACE/SLUG --harness claude-code --apply --dir ./project --scope project --no-prompt --output json
 observal registry mcp install NAMESPACE/SLUG --harness claude-code --apply --dir ./project --scope user --version 2.1.0 --no-prompt --output json
+observal registry mcp install NAMESPACE/SLUG --harness kiro --apply --dir ./project --scope project --no-prompt --output json
+observal registry mcp install NAMESPACE/SLUG --harness codex --apply --dir ./project --scope project --no-prompt --output json
+observal registry mcp install NAMESPACE/SLUG --harness cursor --apply --dir ./project --scope project --no-prompt --output json
 # Without --apply, MCP install only generates a snippet and does not track a local install.
 observal registry mcp install NAMESPACE/SLUG --harness kiro --no-prompt --output json
 observal registry mcp install NAMESPACE/SLUG --harness cursor --version 2.1.0 --no-prompt --output json
@@ -94,7 +97,7 @@ observal registry hook install NAMESPACE/SLUG --harness claude-code --platform d
 observal registry hook install NAMESPACE/SLUG --harness claude-code --version 1.0.0 --dir . --output json
 ```
 
-Tracked `--apply` MCP installs currently support Claude Code only and require both `--dir` and `--scope`; other harnesses retain snippet-only installs. A snippet does not prove installed identity or observed use. Use raw output only when the user explicitly asks for a config snippet or raw response:
+Tracked stdio `--apply` MCP installs support Claude Code, Kiro CLI, Codex and Cursor; they require `--dir`, `--scope project|user`, and a unique unshadowed alias. Malformed or duplicate settings fail closed. Codex project settings must already be trusted by Codex. Cursor may still require separate MCP approval before the server starts. For the three newly supported harnesses, URL/HTTP and extra server options remain snippet-only; Kiro IDE behavior is unverified. A tracked config proves neither an executed call nor observed use, and a snippet proves no installed identity. Use raw output only when the user explicitly asks for a config snippet or raw response:
 
 ```bash
 observal registry mcp install NAMESPACE/SLUG --harness claude-code --raw

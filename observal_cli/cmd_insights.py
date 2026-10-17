@@ -206,9 +206,19 @@ def insights_activity(
             f"  Observed calls: {data.get('observed_calls', 0) if coverage.get('usage_rate_denominator_sessions') else 'not measured'}"
         )
     elif kind == "skill":
-        loads = data.get("confirmed_loads", 0) if coverage.get("usage_rate_denominator_sessions") else "not measured"
+        loads = data.get("confirmed_loads")
+        if not (coverage.get("projection") or {}).get("projection_complete_sessions"):
+            loads = "not measured"
+        elif loads is None:
+            loads = "not recorded"
         invocations = data.get("invocations")
-        rprint(f"  Confirmed loads: {loads}  Invocations: {invocations if invocations is not None else 'not recorded'}")
+        if invocations is not None:
+            invocation_count = invocations
+        elif (coverage.get("projection") or {}).get("projection_complete_sessions"):
+            invocation_count = "not recorded"
+        else:
+            invocation_count = "not measured"
+        rprint(f"  Confirmed loads: {loads}  Invocations: {invocation_count}")
     else:
         runs = (
             data.get("sessions_with_recorded_run", 0)
@@ -269,7 +279,9 @@ def insights_sessions(
             signal = f"{row.get('observed_calls', 0)} calls"
         elif component[0] == "skill":
             invocations = row.get("invocations")
-            signal = f"{row.get('confirmed_loads', 0)} loads; invocations: {invocations if invocations is not None else 'not recorded'}"
+            loads = row.get("confirmed_loads")
+            load_signal = f"{loads} loads" if loads is not None else "loads: not recorded"
+            signal = f"{load_signal}; invocations: {invocations if invocations is not None else 'not recorded'}"
         elif row.get("eligibility") != "eligible":
             signal = f"not eligible ({row.get('eligibility', 'unknown')})"
         else:
@@ -661,10 +673,10 @@ def _render_component_section(name: str, content: object) -> None:
 def _skill_count(metrics: dict, key: str, measured: bool, partial: bool) -> str:
     """A measured count, "not measured" for this period, or "not recorded" by the cohort's harnesses."""
     value = metrics.get(key)
-    if value is None and key in metrics:
-        return "not recorded"
-    if not measured or value is None:
+    if not measured or key not in metrics:
         return "not measured"
+    if value is None:
+        return "not recorded"
     return f"{value} (only harnesses that record it)" if partial else str(value)
 
 
@@ -674,19 +686,26 @@ def _render_skill_report(data: dict) -> None:
     coverage = data.get("coverage") or {}
     reasons = coverage.get("reasons") or []
     measured = bool(coverage.get("usage_rate_denominator_sessions", 0))
+    projected = bool((coverage.get("projection") or {}).get("projection_complete_sessions"))
     rprint(f"[bold]{esc(data.get('component_name') or 'Skill')} Insights[/bold]")
     rprint(f"  {esc((data.get('narrative') or {}).get('summary') or 'No summary available')}")
     rows = (
         ("Present sessions", str(metrics.get("present_sessions", 0))),
-        ("Sessions with a confirmed load", _skill_count(metrics, "loaded_sessions", measured, False)),
+        (
+            "Sessions with a confirmed load",
+            _skill_count(metrics, "loaded_sessions", projected, "load_not_recorded_on_some_harnesses" in reasons),
+        ),
         (
             "Sessions with an invocation",
-            _skill_count(metrics, "invoked_sessions", measured, "invoked_not_recorded_on_some_harnesses" in reasons),
+            _skill_count(metrics, "invoked_sessions", projected, "invoked_not_recorded_on_some_harnesses" in reasons),
         ),
         (
             "Sessions where offered",
             _skill_count(
-                metrics, "available_sessions", measured, "available_not_recorded_on_some_harnesses" in reasons
+                metrics,
+                "available_sessions",
+                projected,
+                "available_not_recorded_on_some_harnesses" in reasons,
             ),
         ),
     )

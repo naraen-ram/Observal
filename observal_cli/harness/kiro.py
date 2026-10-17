@@ -14,7 +14,7 @@ import subprocess
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from observal_cli.discovery.adapter_support import RichAdapterScanner
 from observal_cli.discovery.models import AdapterDiscoveryResult, DiagnosticCode, DiscoveryScope
@@ -37,6 +37,9 @@ from observal_cli.shared.utils import (
     first_content_line,
     parse_frontmatter_field,
 )
+
+if TYPE_CHECKING:
+    from .mcp_binding import McpConfigUndo
 
 _KIRO_VERSION_RE = re.compile(r"(\d+)\.(\d+)")
 
@@ -138,10 +141,45 @@ class KiroAdapter(BaseAdapter):
     headless_binary = "kiro-cli"
     managed_agent_profiles = ("user:agents/{name}.json", "project:.kiro/agents/{name}.json")
     managed_skills = ("user:skills/{name}/SKILL.md",)
+    tracked_mcp_scopes = ("project", "user")
 
     @property
     def harness_name(self) -> str:
         return "kiro"
+
+    def redact_layer_content(self, display_path: str) -> bool:
+        # Shared MCP settings can contain credentials. Publish hashes, never file bytes.
+        return display_path in {"user:settings/mcp.json", "project:.kiro/settings/mcp.json"}
+
+    def mcp_manifest_path(self, scope: str) -> str | None:
+        return {"user": "user:settings/mcp.json", "project": "project:.kiro/settings/mcp.json"}.get(scope)
+
+    def configure_tracked_mcp(self, scope: str, directory: str, alias: str, snippet: dict) -> McpConfigUndo:
+        from .mcp_binding import install_json_mcp, native_mcp_version, stdio_install_entry
+
+        if native_mcp_version("kiro-cli") != "kiro-cli 2.32.0":
+            raise ValueError("Tracked Kiro CLI install requires the tested 2.32.0 runtime")
+        if self.read_installed_mcp(scope, directory, alias)[0] != "missing":
+            raise ValueError("Kiro MCP alias is configured or ambiguous")
+        entry = stdio_install_entry(snippet, "mcpServers", alias)
+        root = Path(directory).resolve() if scope == "project" else Path.home()
+        return install_json_mcp(root / ".kiro/settings/mcp.json", alias, entry)
+
+    def read_installed_mcp(self, scope: str, directory: str | None, alias: str) -> tuple[str, dict | None]:
+        from .mcp_binding import kiro_agent_alias_ambiguous, read_json_mcp
+
+        if scope not in {"user", "project"} or not directory or kiro_cli_major() != 2:
+            return "unverified", None
+        project = Path(directory).resolve()
+        home = Path.home()
+        user_path = home / ".kiro/settings/mcp.json"
+        project_path = project / ".kiro/settings/mcp.json"
+        primary, other = (project_path, user_path) if scope == "project" else (user_path, project_path)
+        status, entry = read_json_mcp(primary, alias)
+        shadow, _ = read_json_mcp(other, alias)
+        if shadow != "missing" or kiro_agent_alias_ambiguous(home, project, alias):
+            return "unverified", None
+        return status, entry
 
     def resolve_session_source(self, event: dict[str, Any], home: Path | None = None) -> SessionSource | None:
         from observal_cli.sessions.kiro import find_kiro_jsonl, read_kiro_session_cwd, resolve_session_id

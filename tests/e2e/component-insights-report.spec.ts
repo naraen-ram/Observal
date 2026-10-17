@@ -79,6 +79,42 @@ test.describe("Component Insights report", () => {
     });
   }
 
+  test("Codex availability-only report shows offered without claiming a measured load or use", async ({ page }, testInfo) => {
+    await loginToWebUI(page);
+    await page.route("**/api/v1/insights/reports/report-fixture", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify({
+        ...base, component_type: "skill", component_name: "super/matrix-codex-verified",
+        metrics: {
+          present_sessions: 1, present_users: 1, available_sessions: 1,
+          loaded_sessions: null, confirmed_loads: null, load_attempts: null,
+          invoked_sessions: null, invocations: null,
+          harness_distribution: { codex: 1 }, version_distribution: { "1.0.0": 1 },
+        },
+        coverage: {
+          ...coverage, presence: { present_sessions: 1, present_users: 1 },
+          projection: { ...coverage.projection, projection_complete_sessions: 1, projection_pending_sessions: 0 },
+          evidence: { candidate_facts: 2, attributed_facts: 1, collision_facts: 0, unmatched_facts: 1, unknown_load_results: 0 },
+          attribution_state: "attribution_not_possible", usage_rate_denominator_sessions: 0,
+          observed_sessions: 0, usage_rate: null,
+          reasons: ["availability_only_harness_sessions", "unattributed_skill_facts"],
+          limitations: ["loads_not_recorded", "invocations_not_recorded"],
+        },
+        narrative: { summary: "The skill was offered in processed, verified-present sessions, but those sessions do not establish whether its instructions entered context. No use conclusion can be drawn." },
+      }),
+    }));
+    for (const [name, width, height] of [["desktop", 1280, 800], ["mobile", 390, 844]] as const) {
+      await page.setViewportSize({ width, height });
+      await page.goto("/insights/report-fixture");
+      await expect(page.getByRole("region", { name: "Evidence" })).toContainText("Offered");
+      await expect(page.getByRole("region", { name: "Evidence" })).toContainText("1");
+      await expect(page.getByRole("region", { name: "Evidence" })).toContainText("Not recorded");
+      await expect(page.getByText("No session in this cohort has measurable skill-use evidence.", { exact: false })).toBeVisible();
+      await expect(page.getByText("Being offered does not establish a skill load or an invocation.")).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`codex-availability-${name}.png`), fullPage: true });
+    }
+  });
+
   test("MCP coverage explains historical gaps without attributing them to the listing", async ({ page }, testInfo) => {
     await loginToWebUI(page);
     await page.route("**/api/v1/insights/reports/report-fixture", (route) => route.fulfill({

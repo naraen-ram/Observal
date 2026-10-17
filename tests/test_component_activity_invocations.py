@@ -173,7 +173,9 @@ def test_malformed_source_and_missing_time_are_explicit_not_derived_from_rendere
     assert [call.event_time for call in extracted.invocations] == [datetime(2026, 1, 1, 0, 0, 2, tzinfo=UTC), None]
 
 
-@pytest.mark.parametrize("harness", sorted(set(HARNESS_REGISTRY) - {"claude-code", "pi"}))
+@pytest.mark.parametrize(
+    "harness", sorted(name for name, entry in HARNESS_REGISTRY.items() if not entry.get("invocation_extractor"))
+)
 def test_unverified_harness_extractor_is_unsupported_not_zero_use(harness):
     assert extract_invocations(harness, []).status == "unsupported"
     assert extract_invocations(harness, []).invocations == ()

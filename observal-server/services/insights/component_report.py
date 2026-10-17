@@ -124,8 +124,13 @@ def generate_skill_sections(summary: dict, coverage: dict) -> dict:
             "No confirmed load or invocation in processed present sessions; this does not prove the skill "
             "was never used."
         )
+    elif summary["available_sessions"] and coverage["projection"]["projection_complete_sessions"]:
+        conclusion = (
+            "The skill was offered in processed, verified-present sessions, but those sessions do not establish "
+            "whether its instructions entered context. No use conclusion can be drawn."
+        )
     else:
-        conclusion = "Skill evidence is unavailable for this cohort; no use conclusion can be drawn."
+        conclusion = "Skill-use evidence is unavailable for this cohort; no use conclusion can be drawn."
     processed = coverage["projection"]["projection_complete_sessions"]
     return {
         "summary": conclusion,

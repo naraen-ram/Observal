@@ -77,9 +77,14 @@ class SkillEvidenceExtractor(Protocol):
 
 def _extractors() -> dict[str, SkillEvidenceExtractor]:
     from .claude_code_skill_evidence import ClaudeCodeSkillEvidenceExtractor
+    from .codex_skill_evidence import CodexSkillEvidenceExtractor
     from .pi_skill_evidence import PiSkillEvidenceExtractor
 
-    return {"pi": PiSkillEvidenceExtractor(), "claude-code": ClaudeCodeSkillEvidenceExtractor()}
+    return {
+        "pi": PiSkillEvidenceExtractor(),
+        "claude-code": ClaudeCodeSkillEvidenceExtractor(),
+        "codex": CodexSkillEvidenceExtractor(),
+    }
 
 
 def kind_recorded(harness: str, kind: EvidenceKind) -> bool:

@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 
     from services.session_parsers.skill_evidence import SkillEvidence
 
-SKILL_MATCHER_VERSION = 2
+# 3: Codex's version-scoped, fail-closed native skill inventory joins availability facts.
+# Bump the shared publication key so earlier skill projections cannot masquerade as current.
+SKILL_MATCHER_VERSION = 3
 
 
 @dataclass(frozen=True)
