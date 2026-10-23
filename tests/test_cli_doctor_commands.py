@@ -923,7 +923,7 @@ class TestPatchStateEdges:
         assert not (tmp_path / ".codex").exists()
         output = _plain(capsys.readouterr().out)
         assert "Would install hooks" in output
-        assert "Would enable codex_hooks flag" in output
+        assert "Would enable features.hooks" in output
 
     @pytest.mark.parametrize(
         ("patcher", "relative_path", "message"),

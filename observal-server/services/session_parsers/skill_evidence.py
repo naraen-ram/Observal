@@ -16,10 +16,13 @@ Evidence kinds, none of which shows that a skill achieved anything:
   harness records a distinguishable invocation origin. Pi does not: its
   ``/skill:name`` expansion is stored as an ordinary user message, which
   pasted text can reproduce, so the Pi extractor never emits ``invoked``.
+* ``file_access``: a successful native file-read result for the exact verified
+  SKILL.md path. This is neither an invocation nor a confirmed skill load;
+  missing reads cannot establish a zero-access denominator.
 
-Each extractor declares the kinds its harness can observe at all
-(``observed_kinds``). A kind outside that set is *not recorded* for the
-harness: its counts are unknown, never a measured zero.
+Each extractor declares the kinds and install scopes it can observe
+(``observed_kinds`` and ``observed_scopes``). Outside either set, counts
+are unknown, never a measured zero.
 
 Each fact's ``source_block_key`` is unique within its source line and
 namespaced (``skill-...``), so facts never replace each other or an MCP call
@@ -42,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import datetime
 
-EvidenceKind = Literal["available", "load", "invoked"]
+EvidenceKind = Literal["available", "load", "invoked", "file_access"]
 
 
 @dataclass(frozen=True)
@@ -71,21 +74,39 @@ class SkillEvidenceExtraction:
 class SkillEvidenceExtractor(Protocol):
     # The evidence kinds this harness's transcripts can show, tied to a file.
     observed_kinds: frozenset[EvidenceKind]
+    observed_scopes: frozenset[str]
+    # A selected-skill invocation can also imply instructions were supplied;
+    # this is a description of the same fact, not another use or a load.
+    selected_instructions_supplied: bool
 
     def extract(self, rows: Sequence[Mapping[str, object]]) -> SkillEvidenceExtraction: ...
 
 
 def _extractors() -> dict[str, SkillEvidenceExtractor]:
     from .claude_code_skill_evidence import ClaudeCodeSkillEvidenceExtractor
+    from .codex_skill_evidence import CodexSkillEvidenceExtractor
     from .pi_skill_evidence import PiSkillEvidenceExtractor
 
-    return {"pi": PiSkillEvidenceExtractor(), "claude-code": ClaudeCodeSkillEvidenceExtractor()}
+    return {
+        "pi": PiSkillEvidenceExtractor(),
+        "claude-code": ClaudeCodeSkillEvidenceExtractor(),
+        "codex": CodexSkillEvidenceExtractor(),
+    }
 
 
-def kind_recorded(harness: str, kind: EvidenceKind) -> bool:
-    """True only for a supported harness whose extractor can observe this evidence kind."""
+def kind_recorded(harness: str, kind: EvidenceKind, scope: str | None = None) -> bool:
+    """Only report a kind as measurable in install scopes the extractor covers."""
     extractor_id = HARNESS_REGISTRY.get(harness, {}).get("skill_evidence_extractor")
-    return bool(extractor_id) and kind in _extractors()[extractor_id].observed_kinds
+    if not extractor_id:
+        return False
+    extractor = _extractors()[extractor_id]
+    return kind in extractor.observed_kinds and (scope is None or scope in extractor.observed_scopes)
+
+
+def selection_supplies_instructions(harness: str) -> bool:
+    """Only opt in native selection formats verified to include the skill instructions."""
+    extractor_id = HARNESS_REGISTRY.get(harness, {}).get("skill_evidence_extractor")
+    return bool(extractor_id) and _extractors()[extractor_id].selected_instructions_supplied
 
 
 def extract_skill_evidence(harness: str, rows: Sequence[Mapping[str, object]]) -> SkillEvidenceExtraction:

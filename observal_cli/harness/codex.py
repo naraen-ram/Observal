@@ -10,6 +10,7 @@ import json
 import re
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from observal_cli.discovery.adapter_support import RichAdapterScanner
 from observal_cli.discovery.models import AdapterDiscoveryResult, DiagnosticCode, DiscoveryScope
@@ -23,6 +24,9 @@ from observal_cli.harness import (
 from observal_cli.harness.base import BaseAdapter, inline_agent_prompt
 from observal_cli.harness.protocol import HeadlessPlan, HeadlessRequest
 from observal_cli.shared.utils import _OBSERVAL_HOOK_MARKERS
+
+if TYPE_CHECKING:
+    from .mcp_binding import McpConfigUndo
 
 
 def _load_toml(path: Path) -> dict:
@@ -54,10 +58,84 @@ class CodexAdapter(BaseAdapter):
     headless_binary = "codex"
     managed_agent_profiles = ("user:agents/{name}.toml", "project:.codex/agents/{name}.toml")
     managed_mcp_files = ("user:config.toml",)
+    tracked_mcp_scopes = ("project", "user")
 
     @property
     def harness_name(self) -> str:
         return "codex"
+
+    def redact_layer_content(self, display_path: str) -> bool:
+        # MCP env/bearer settings live beside ordinary Codex config.
+        return display_path in {"user:config.toml", "project:.codex/config.toml"}
+
+    def mcp_manifest_path(self, scope: str) -> str | None:
+        return {"user": "user:config.toml", "project": "project:.codex/config.toml"}.get(scope)
+
+    def configure_tracked_mcp(self, scope: str, directory: str, alias: str, snippet: dict) -> McpConfigUndo:
+        from .mcp_binding import install_toml_mcp, native_mcp_version, stdio_install_entry
+
+        if native_mcp_version("codex") != "codex-cli 0.163.0":
+            raise ValueError("Tracked Codex install requires the tested 0.163.0 runtime")
+        if self.read_installed_mcp(scope, directory, alias)[0] != "missing":
+            raise ValueError("Codex MCP alias is untrusted, configured or ambiguous")
+        entry = stdio_install_entry(snippet, "mcp_servers", alias)
+        root = Path(directory).resolve() / ".codex" if scope == "project" else Path.home() / ".codex"
+        return install_toml_mcp(root / "config.toml", alias, entry)
+
+    def read_installed_mcp(self, scope: str, directory: str | None, alias: str) -> tuple[str, dict | None]:
+        import os
+        import tomllib
+
+        from .mcp_binding import read_toml_mcp
+
+        if scope not in {"user", "project"} or not directory:
+            return "unverified", None
+        home = Path.home() / ".codex"
+        if Path(os.environ.get("CODEX_HOME", home)).resolve() != home.resolve():
+            return "unverified", None  # fixed layer paths cannot hash a relocated Codex home
+        project = Path(directory).resolve()
+        user_path = home / "config.toml"
+        project_path = project / ".codex/config.toml"
+        primary, other = (project_path, user_path) if scope == "project" else (user_path, project_path)
+        status, entry = read_toml_mcp(primary, alias)
+        shadow, _ = read_toml_mcp(other, alias)
+        if shadow != "missing":
+            return "unverified", None
+        if scope == "project":
+            # Codex 0.163.0 ignored an untrusted project's config in a native
+            # exec control. A present file is not proof that Codex loaded it.
+            try:
+                user = tomllib.loads(user_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
+                return "unverified", None
+            projects = user.get("projects")
+            project_config = projects.get(str(project)) if isinstance(projects, dict) else None
+            if not isinstance(project_config, dict) or project_config.get("trust_level") != "trusted":
+                return "unverified", None
+        return status, entry
+
+    def skill_manifest_path(self, scope: str, alias: str) -> str | None:
+        # Only the project layout has a verified, recorded native listing.
+        return f"project:.agents/skills/{alias}/SKILL.md" if scope == "project" else None
+
+    def skill_location(self, scope: str, directory: str | None, alias: str) -> str | None:
+        if scope != "project" or not directory:
+            return None
+        # Codex's roots on macOS use the canonical /private/tmp path, not /tmp.
+        return str((Path(directory) / ".agents" / "skills" / alias / "SKILL.md").resolve())
+
+    def skill_shadow_paths(self, scope: str, directory: str | None, alias: str) -> list[Path]:
+        if scope != "project" or not directory:
+            return []
+        # Codex can discover skills in the user home and parent workspaces.
+        # A same-named skill anywhere else makes this project's identity unclear.
+        root = Path(directory).resolve()
+        parents = [parent / ".agents" / "skills" / alias / "SKILL.md" for parent in root.parents]
+        return [
+            Path.home() / ".agents" / "skills" / alias / "SKILL.md",
+            Path.home() / ".codex" / "skills" / alias / "SKILL.md",
+            *parents,
+        ]
 
     @staticmethod
     def _session_id(path: Path) -> str:

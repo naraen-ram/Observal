@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from observal_cli.discovery.adapter_support import RichAdapterScanner
 from observal_cli.discovery.models import AdapterDiscoveryResult, DiscoveryScope
@@ -23,6 +24,9 @@ from observal_cli.harness.base import BaseAdapter, inline_agent_prompt, parse_js
 from observal_cli.harness.protocol import HeadlessPlan, HeadlessRequest, HeadlessResult
 from observal_cli.shared.utils import extract_mcp_servers
 
+if TYPE_CHECKING:
+    from .mcp_binding import McpConfigUndo
+
 
 class CursorAdapter(BaseAdapter):
     """Adapter for Cursor."""
@@ -34,10 +38,42 @@ class CursorAdapter(BaseAdapter):
         "project:.cursor/agents/{name}.md",
     )
     managed_skills = ("user:rules/{name}.mdc", "user:skills/{name}/SKILL.md")
+    tracked_mcp_scopes = ("project", "user")
 
     @property
     def harness_name(self) -> str:
         return "cursor"
+
+    def redact_layer_content(self, display_path: str) -> bool:
+        # Shared MCP settings may hold env values and HTTP authorization headers.
+        return display_path in {"user:mcp.json", "project:.cursor/mcp.json"}
+
+    def mcp_manifest_path(self, scope: str) -> str | None:
+        return {"user": "user:mcp.json", "project": "project:.cursor/mcp.json"}.get(scope)
+
+    def configure_tracked_mcp(self, scope: str, directory: str, alias: str, snippet: dict) -> McpConfigUndo:
+        from .mcp_binding import install_json_mcp, native_mcp_version, stdio_install_entry
+
+        if native_mcp_version("cursor-agent") != "2026.10.14-941492e":
+            raise ValueError("Tracked Cursor install requires the tested 2026.10.14 runtime")
+        if self.read_installed_mcp(scope, directory, alias)[0] != "missing":
+            raise ValueError("Cursor MCP alias is configured or ambiguous")
+        entry = stdio_install_entry(snippet, "mcpServers", alias)
+        root = Path(directory).resolve() if scope == "project" else Path.home()
+        return install_json_mcp(root / ".cursor/mcp.json", alias, entry)
+
+    def read_installed_mcp(self, scope: str, directory: str | None, alias: str) -> tuple[str, dict | None]:
+        from .mcp_binding import read_json_mcp
+
+        if scope not in {"user", "project"} or not directory:
+            return "unverified", None
+        project = Path(directory).resolve()
+        user_path = Path.home() / ".cursor/mcp.json"
+        project_path = project / ".cursor/mcp.json"
+        primary, other = (project_path, user_path) if scope == "project" else (user_path, project_path)
+        status, entry = read_json_mcp(primary, alias)
+        shadow, _ = read_json_mcp(other, alias)
+        return ("unverified", None) if shadow != "missing" else (status, entry)
 
     def resolve_session_source(self, event: dict, home: Path | None = None) -> SessionSource | None:
         from observal_cli.sessions.cursor import find_cursor_jsonl, get_parent_session_id, project_key_from_cwd
@@ -47,13 +83,26 @@ class CursorAdapter(BaseAdapter):
             return None
         transcript = str(event.get("transcriptPath") or event.get("transcript_path") or "")
         path = Path(transcript) if transcript else None
+        cwd = str(event.get("workspacePath") or event.get("cwd") or "")
+        if not cwd:
+            # Cursor Agent 2026.10.14 sends workspace_roots (not workspacePath)
+            # at sessionEnd. Multiple roots cannot identify one installed project.
+            roots = event.get("workspace_roots")
+            if isinstance(roots, list) and len(roots) == 1 and isinstance(roots[0], str):
+                candidate = roots[0]
+                if Path(candidate).is_absolute() and Path(candidate).is_dir():
+                    cwd = candidate
         if path is None or not path.is_file():
-            workspace = str(event.get("workspacePath") or event.get("cwd") or "")
-            roots = event.get("workspace_roots") or []
-            cwd = workspace or (str(roots[0]) if roots else "")
             path = find_cursor_jsonl(session_id, project_key_from_cwd(cwd), home=home)
-        else:
-            cwd = str(event.get("workspacePath") or event.get("cwd") or "")
+        elif cwd and not (event.get("workspacePath") or event.get("cwd")):
+            # A roots-only project must also agree with the native transcript
+            # directory before it can carry a version-pinned layer identity.
+            try:
+                relative = path.resolve().relative_to((home or Path.home()).resolve() / ".cursor/projects")
+                if not relative.parts or relative.parts[0] != project_key_from_cwd(cwd):
+                    cwd = ""
+            except ValueError:
+                cwd = ""
         if path is None:
             return None
         parent_session_id = get_parent_session_id(path)
@@ -128,10 +177,12 @@ class CursorAdapter(BaseAdapter):
     ) -> tuple[str, ...]:
         if not final or source.parent_session_id is not None:
             return ()
+        from observal_cli.hooks.cursor_mcp_evidence import source_records
         from observal_cli.sessions.cursor import build_usage_line
 
+        evidence = source_records(source, event, home=home)
         usage = build_usage_line(event)
-        return (usage,) if usage else ()
+        return (*evidence, usage) if usage else evidence
 
     def defer_session_delivery(self) -> bool:
         return True

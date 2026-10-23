@@ -41,6 +41,54 @@ def test_activity_preserves_server_coverage_and_uses_resolved_component(monkeypa
     assert calls == [(f"/api/v1/components/{kind}/{COMPONENT_ID}/activity/summary", {"period_days": 30})]
 
 
+@pytest.mark.parametrize(
+    ("accessed", "phrase"),
+    [
+        (1, "Skill file accessed: at least 1 session"),
+        (None, "Skill file accessed: unknown (not zero"),
+    ],
+)
+def test_skill_file_access_activity_keeps_lower_bound_separate_from_use(monkeypatch, accessed, phrase):
+    monkeypatch.setattr("observal_cli.cmd_insights.client.resolve_registry_reference", lambda *_: COMPONENT_ID)
+    monkeypatch.setattr(
+        "observal_cli.cmd_insights.client.get",
+        lambda *_args, **_kwargs: {
+            "component": {"qualified_name": "team/probe"},
+            "present_sessions": 2,
+            "confirmed_loads": None,
+            "invocations": 0,
+            "file_access_sessions": accessed,
+            "coverage": {"presence": {"eligible_sessions": 2}, "projection": {"projection_complete_sessions": 2}},
+        },
+    )
+    result = runner.invoke(insights_app, ["activity", "--component", "skill", "team/probe"])
+    assert result.exit_code == 0, result.output
+    assert phrase in result.output
+    assert "Confirmed loads: not recorded  Invocations: 0" in result.output
+
+
+def test_inferred_supply_cli_excludes_file_reads_only_from_that_measure(monkeypatch):
+    monkeypatch.setattr("observal_cli.cmd_insights.client.resolve_registry_reference", lambda *_: COMPONENT_ID)
+    monkeypatch.setattr(
+        "observal_cli.cmd_insights.client.get",
+        lambda *_args, **_kwargs: {
+            "component": {"qualified_name": "team/probe"},
+            "present_sessions": 2,
+            "confirmed_loads": None,
+            "invocations": 1,
+            "instructions_supplied_inferred_sessions": 1,
+            "file_access_sessions": 1,
+            "coverage": {"presence": {"eligible_sessions": 2}, "projection": {"projection_complete_sessions": 2}},
+        },
+    )
+    result = runner.invoke(insights_app, ["activity", "--component", "skill", "team/probe"])
+    assert result.exit_code == 0, result.output
+    assert "Skill file accessed: at least 1 session" in result.output
+    assert "Instructions supplied (inferred): 1 session" in result.output
+    assert "Manual reads do not count toward inferred instruction supply" in " ".join(result.output.split())
+    assert "Manual reads are not counted" not in result.output
+
+
 def test_sessions_passes_cursor_and_keeps_nullable_evidence(monkeypatch):
     monkeypatch.setattr("observal_cli.cmd_insights.client.resolve_registry_reference", lambda *_: COMPONENT_ID)
     expected = {"sessions": [{"session_id": "session-1", "invocations": None}], "next_cursor": "next-page"}

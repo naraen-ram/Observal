@@ -20,12 +20,31 @@ from services.component_activity import hook_queries, queries, skill_queries
     ("module", "attribute", "expected"),
     [
         (queries, "_SESSIONS", "83cb71d1c38f34e4af7fada363ad36d1ee770d381db98e1a72be8002f95eba9d"),
-        (skill_queries, "_SKILL_SESSIONS", "85abe02b0ca54b686c87fb8a2e17b89d2e662f6fc7fa61082c751dc4094f2071"),
+        (skill_queries, "_SKILL_SESSIONS", "5d0d9d9c4f206d0d1697bd1570b730dbfcdb97dbd3c723b920730fd05a7dd2a6"),
         (hook_queries, "_HOOK_SESSIONS", "c39efbf248d5604c646ad363aa1266076510743823b43fffbd7d168f0cbfb4f6"),
     ],
 )
 def test_session_cohort_sql_unchanged(module, attribute, expected):
     assert hashlib.sha256(getattr(module, attribute).encode()).hexdigest() == expected
+
+
+def test_project_only_skill_scope_is_bound_to_current_verified_listing():
+    scopes = skill_queries._SKILL_SCOPES
+    sessions = skill_queries._SKILL_SESSIONS
+    summary = skill_queries._SKILL_SUMMARY
+    for fragment in (
+        "c.extraction_generation = published.generation",
+        "published.conflict = 0",
+        "c.identity_status = 'resolved' AND c.verification_status = 'verified'",
+        "c.component_id = {component_id:String}",
+        "c.component_version_id = {component_version_id:String}",
+        "GROUP BY c.user_id, c.harness, c.layer_hash",
+    ):
+        assert fragment in scopes
+    assert "scope_map.project_installs > 0 AND scope_map.other_installs = 0" in sessions
+    assert "scope_map.layer_hash" in sessions
+    assert "AND scope_measurable) AS usage_measurable_sessions" in summary
+    assert "AND scope_measurable) AS invoked_measurable_sessions" in summary
 
 
 def test_evidence_kind_is_scoped_per_publication():

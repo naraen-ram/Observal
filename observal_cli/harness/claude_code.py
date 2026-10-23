@@ -51,6 +51,7 @@ class ClaudeCodeAdapter(BaseAdapter):
     headless_task_on_stdin = True
     managed_agent_profiles = ("user:agents/{name}.md", "project:.claude/agents/{name}.md")
     managed_skills = ("user:skills/{name}/SKILL.md",)
+    tracked_mcp_scopes = ("project", "user")
 
     @property
     def harness_name(self) -> str:
@@ -166,6 +167,30 @@ class ClaudeCodeAdapter(BaseAdapter):
             # scope. Ignore flags after `--` (they belong to the MCP process).
             return [*command[:3], "--scope", "local" if scope == "project" else scope, *command[3:]]
         return command
+
+    def configure_tracked_mcp(self, scope: str, directory: str, alias: str, snippet: dict) -> None:
+        import subprocess
+
+        command = snippet.get("command") if isinstance(snippet, dict) else None
+        if (
+            not isinstance(command, list)
+            or command[:3] != ["claude", "mcp", "add"]
+            or len(command) < 4
+            or command[3] != alias
+            or any(not isinstance(arg, str) for arg in command)
+        ):
+            raise ValueError("Server did not return a verifiable Claude Code MCP command")
+        try:
+            installed = subprocess.run(
+                [*command[:3], "--scope", scope, *command[3:]],
+                cwd=Path(directory),
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            raise ValueError("Claude Code MCP setup could not run") from exc
+        if installed.returncode != 0:
+            raise ValueError("Claude Code MCP setup failed")
 
     def mcp_manifest_path(self, scope: str) -> str | None:
         return {"project": "project:.mcp.json", "user": "user:.claude.json"}.get(scope)

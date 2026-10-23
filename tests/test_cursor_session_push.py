@@ -71,6 +71,29 @@ def test_cursor_adapter_resolves_transcript_and_related_subagent(tmp_path: Path)
     assert related[0].parent_session_id == "session"
 
 
+def test_cursor_native_session_end_root_binds_only_matching_single_project(tmp_path: Path):
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    key = project_key_from_cwd(str(project))
+    path = home / ".cursor/projects" / key / "agent-transcripts" / "session" / "session.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"role":"assistant","message":{"content":[]}}\n')
+    ensure_loaded()
+    adapter = get_adapter("cursor")
+    event = {"session_id": "session", "transcript_path": str(path), "workspace_roots": [str(project)]}
+    source = adapter.resolve_session_source(event, home=home)
+    assert source is not None and source.cwd == str(project)
+    for roots in ([str(project), str(tmp_path)], [str(tmp_path)], ["relative-workspace"], "bad-roots"):
+        source = adapter.resolve_session_source({**event, "workspace_roots": roots}, home=home)
+        assert source is not None and source.cwd == ""
+    # A transcript outside this Cursor home's project tree cannot bind a root.
+    outside = tmp_path / "external.jsonl"
+    outside.write_text(path.read_text())
+    source = adapter.resolve_session_source({**event, "transcript_path": str(outside)}, home=home)
+    assert source is not None and source.cwd == ""
+
+
 def test_cursor_usage_is_a_parent_only_synthetic_record(tmp_path: Path):
     path = make_session(tmp_path)
     ensure_loaded()

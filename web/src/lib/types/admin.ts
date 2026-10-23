@@ -187,13 +187,18 @@ export interface SkillInsightMetrics {
 	present_users: number;
 	/** Null when no harness in the cohort records which skill file it advertised. */
 	available_sessions: number | null;
-	loaded_sessions: number;
-	confirmed_loads: number;
-	load_attempts: number;
+	/** Null when no harness in the cohort records skill loads. */
+	loaded_sessions: number | null;
+	confirmed_loads: number | null;
+	load_attempts: number | null;
 	activation_actions?: { context_sessions: number; next_session_sessions: number; scope: "component" | "component_version" };
 	/** Null when no harness in the cohort records a distinguishable invocation. */
 	invoked_sessions: number | null;
 	invocations: number | null;
+	/** Native Codex project-skill selection, also counted as invocation. Older reports omit it. */
+	instructions_supplied_inferred_sessions?: number | null;
+	/** Positive-only lower bound for successful verified direct SKILL.md reads; null is unknown, never zero. */
+	file_access_sessions?: number | null;
 	harness_distribution: Record<string, number>;
 	version_distribution: Record<string, number>;
 }

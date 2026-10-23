@@ -18,7 +18,9 @@ push session JSONL incrementally to the server.
 
 import hashlib
 import json
+import re
 import sys
+import tomllib
 from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -427,11 +429,22 @@ def _check_cursor(issues: list, warnings: list):
         return
 
     hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        issues.append(f"{hooks_path}: hooks must be a JSON object.")
+        return
     has_session_push = False
-    for event in ("beforeSubmitPrompt", "stop"):
+    for event in ("beforeSubmitPrompt", "stop", "sessionEnd"):
         entries = hooks.get(event, [])
-        for e in entries:
-            if "hooks.session_push --harness cursor" in e.get("command", ""):
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            if isinstance(command, str) and (
+                "hooks.session_push --harness cursor" in command
+                or (event == "sessionEnd" and "hooks.cursor_mcp_evidence --event end" in command)
+            ):
                 has_session_push = True
                 break
 
@@ -439,6 +452,11 @@ def _check_cursor(issues: list, warnings: list):
         warnings.append(
             "Cursor session push hooks not installed. Run `observal doctor patch --harness cursor` to inject them."
         )
+    if any(event in hooks for event in ("sessionStart", "beforeMCPExecution", "afterMCPExecution", "sessionEnd")):
+        from observal_cli.hooks.cursor_mcp_evidence import _hooks_hash
+
+        if _hooks_hash(Path.home()) is None:
+            warnings.append("Cursor MCP evidence hooks are incomplete or shadowed; MCP use remains unmeasurable.")
 
 
 def _check_codex(issues: list, warnings: list):
@@ -472,14 +490,26 @@ def _check_codex(issues: list, warnings: list):
             "Codex session push hooks not installed. Run `observal doctor patch --harness codex` to inject them."
         )
 
-    # Check codex_hooks flag
+    # Codex 0.163.0 ignores a top-level codex_hooks key. The canonical switch
+    # is [features].hooks; hook trust is independent and must be reviewed in /hooks.
     if config_path.exists():
         try:
-            content = config_path.read_text()
-            if "codex_hooks = false" in content:
-                issues.append(f"{config_path}: `codex_hooks = false`. Observal hooks will not fire.")
+            settings = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            features = settings.get("features", {})
+            if isinstance(features, dict) and features.get("hooks") is False:
+                issues.append(f"{config_path}: `[features] hooks = false`. Observal hooks will not fire.")
+            elif (
+                isinstance(features, dict)
+                and features.get("hooks") is not True
+                and features.get("codex_hooks") is False
+            ):
+                issues.append(f"{config_path}: `[features] codex_hooks = false`. Observal hooks will not fire.")
+            if "codex_hooks" in settings:
+                warnings.append(f"{config_path}: top-level `codex_hooks` is ignored by Codex; use `[features] hooks`.")
         except OSError as error:
             issues.append(f"{config_path}: cannot read Codex configuration: {error}")
+        except (ValueError, UnicodeError):
+            issues.append(f"{config_path}: invalid Codex TOML configuration.")
 
 
 def _check_copilot(issues: list, warnings: list):
@@ -1030,6 +1060,19 @@ def _cleanup_pi(dry_run: bool) -> bool:
     return changed
 
 
+def _is_managed_cursor_hook(entry: object) -> bool:
+    """Match only Observal-owned hook commands, never a foreign substring."""
+    command = entry.get("command") if isinstance(entry, dict) else None
+    return isinstance(command, str) and any(
+        marker in command
+        for marker in (
+            "cursor_session_push",
+            "observal_cli.hooks.session_push",
+            "observal_cli.hooks.cursor_mcp_evidence",
+        )
+    )
+
+
 def _cleanup_cursor(dry_run: bool) -> bool:
     """Remove Observal hooks from ~/.cursor/hooks.json."""
     rprint("[cyan]Cursor[/cyan]")
@@ -1041,17 +1084,15 @@ def _cleanup_cursor(dry_run: bool) -> bool:
     data = _read_json_object(hooks_path)
 
     hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ValueError("Cursor hooks must be a JSON object")
     changed = False
     removed_events = []
 
     for event, entries in list(hooks.items()):
         if not isinstance(entries, list):
             continue
-        cleaned = [
-            h
-            for h in entries
-            if "cursor_session_push" not in h.get("command", "") and "session_push" not in h.get("command", "")
-        ]
+        cleaned = [entry for entry in entries if not _is_managed_cursor_hook(entry)]
         if len(cleaned) < len(entries):
             removed_events.append(f"{event} ({len(entries) - len(cleaned)} removed)")
             if not dry_run:
@@ -1433,12 +1474,20 @@ def _patch_cursor(dry_run: bool) -> bool:
     from observal_cli.shared.launcher import module_command
 
     cmd = f"{module_command('observal_cli.hooks.session_push')} --harness cursor"
+    evidence = module_command("observal_cli.hooks.cursor_mcp_evidence")
 
     desired = {
         "version": 1,
         "hooks": {
+            # Keep the older IDE/CLI session triggers; the tested headless CLI
+            # uses sessionEnd. Its collector writes a private heartbeat first,
+            # then invokes the existing acknowledged session-push pipeline.
             "beforeSubmitPrompt": [{"command": cmd, "type": "command"}],
             "stop": [{"command": cmd, "type": "command"}],
+            "sessionStart": [{"command": f"{evidence} --event start", "type": "command"}],
+            "beforeMCPExecution": [{"command": f"{evidence} --event before", "type": "command"}],
+            "afterMCPExecution": [{"command": f"{evidence} --event after", "type": "command"}],
+            "sessionEnd": [{"command": f"{evidence} --event end", "type": "command"}],
         },
     }
 
@@ -1449,12 +1498,18 @@ def _patch_cursor(dry_run: bool) -> bool:
 
     # Check if already patched
     existing_hooks = existing.get("hooks", {})
+    if not isinstance(existing_hooks, dict):
+        raise ValueError("Cursor hooks must be a JSON object")
     needs_update = False
 
-    for event in ("beforeSubmitPrompt", "stop"):
+    for event, desired_entries in desired["hooks"].items():
         entries = existing_hooks.get(event, [])
-        has_observal = any("hooks.session_push --harness cursor" in e.get("command", "") for e in entries)
-        if not has_observal:
+        if not isinstance(entries, list) or not any(
+            isinstance(entry, dict)
+            and entry.get("command") == desired_entries[0]["command"]
+            and entry.get("type") == "command"
+            for entry in entries
+        ):
             needs_update = True
             break
 
@@ -1467,11 +1522,9 @@ def _patch_cursor(dry_run: bool) -> bool:
     for event, desired_entries in desired["hooks"].items():
         current = merged_hooks.get(event, [])
         # Remove old Observal hooks
-        cleaned = [
-            h
-            for h in current
-            if "cursor_session_push" not in h.get("command", "") and "session_push" not in h.get("command", "")
-        ]
+        if not isinstance(current, list):
+            raise ValueError("Cursor hook entries must be a list")
+        cleaned = [entry for entry in current if not _is_managed_cursor_hook(entry)]
         merged_hooks[event] = cleaned + desired_entries
 
     result = {"version": 1, "hooks": merged_hooks}
@@ -1568,8 +1621,47 @@ def _patch_pi(dry_run: bool) -> bool:
     return True
 
 
+def _codex_hooks_config(content: str) -> str:
+    """Set the actual Codex hooks feature, preserving unrelated TOML and comments."""
+    try:
+        settings = tomllib.loads(content)
+    except ValueError:
+        raise ValueError("Existing Codex configuration is not valid TOML") from None
+    features = settings.get("features", {})
+    if not isinstance(features, dict) or ("hooks" in features and type(features["hooks"]) is not bool):
+        raise ValueError("Codex [features].hooks must be a boolean")
+
+    # Older doctor releases wrote this ignored *root-level* key. Remove only
+    # their unadorned boolean assignment, never a comment or another setting.
+    first_table = re.search(r"(?m)^\s*\[", content)
+    root_end = first_table.start() if first_table else len(content)
+    root = re.sub(r"(?m)^codex_hooks\s*=\s*(?:true|false)\s*\n", "", content[:root_end])
+    content = root + content[root_end:]
+
+    if features.get("hooks") is not True:
+        header = re.search(r"(?m)^\[features\](?:\s*#.*)?\s*$", content)
+        if header is None:
+            if "features" in settings:
+                raise ValueError("Codex [features] must use a plain table header")
+            content = content.rstrip() + "\n\n[features]\nhooks = true\n"
+        else:
+            next_table = re.search(r"(?m)^\s*\[", content[header.end() :])
+            end = header.end() + next_table.start() if next_table else len(content)
+            body = content[header.end() : end]
+            if "hooks" in features:
+                updated, count = re.subn(r"(?m)^(\s*hooks\s*=\s*)false(\s*(?:#.*)?)$", r"\g<1>true\2", body)
+                if count != 1:
+                    raise ValueError("Cannot safely update Codex [features].hooks")
+                content = content[: header.end()] + updated + content[end:]
+            else:
+                content = content[: header.end()] + "\nhooks = true" + content[header.end() :]
+    if tomllib.loads(content).get("features", {}).get("hooks") is not True:
+        raise ValueError("Cannot enable Codex hooks")
+    return content
+
+
 def _patch_codex(dry_run: bool) -> bool:
-    """Install session push hooks into ~/.codex/hooks.json and enable codex_hooks flag."""
+    """Install session push hooks and enable [features].hooks (trust remains manual)."""
     optic.debug("_patch_codex: dry_run={}", dry_run)
     from observal_cli.harness_specs.codex_hooks_spec import build_codex_hooks
 
@@ -1603,17 +1695,14 @@ def _patch_codex(dry_run: bool) -> bool:
             needs_update = True
             break
 
-    # Also check if codex_hooks flag needs enabling
-    needs_flag = False
-    if config_path.exists():
-        content = config_path.read_text()
-        if "codex_hooks" not in content or "codex_hooks = false" in content:
-            needs_flag = True
-    else:
-        needs_flag = True
+    # Preflight Codex config before writing either file. The old top-level
+    # codex_hooks assignment is ignored by Codex 0.163.0, even when true.
+    current_config = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    desired_config = _codex_hooks_config(current_config)
+    needs_flag = desired_config != current_config
 
     if not needs_update and not needs_flag:
-        rprint("  [dim]Already up to date[/dim]")
+        rprint("  [dim]Already up to date; confirm trust and enabled state in Codex /hooks.[/dim]")
         return False
 
     # Merge hooks: preserve non-Observal hooks, add ours
@@ -1639,23 +1728,17 @@ def _patch_codex(dry_run: bool) -> bool:
         verb = "Would install" if dry_run else "Installed"
         rprint(f"  {verb} hooks in {esc(hooks_path)}")
 
-    # Enable codex_hooks flag in config.toml
     if needs_flag:
         if not dry_run:
             codex_dir.mkdir(parents=True, exist_ok=True)
-            if config_path.exists():
-                content = config_path.read_text()
-                if "codex_hooks = false" in content:
-                    content = content.replace("codex_hooks = false", "codex_hooks = true")
-                elif "codex_hooks" not in content:
-                    content = f"codex_hooks = true\n{content}"
-                atomic_write(config_path, content)
-            else:
-                atomic_write(config_path, "codex_hooks = true\n")
-
+            atomic_write(config_path, desired_config)
         verb = "Would enable" if dry_run else "Enabled"
-        rprint(f"  {verb} codex_hooks flag in {esc(config_path)}")
+        rprint(f"  {verb} features.hooks in {esc(config_path)}")
 
+    if not dry_run:
+        rprint(
+            "  [dim]Review and trust Observal's non-managed commands in Codex /hooks; installation does not grant trust.[/dim]"
+        )
     return True
 
 

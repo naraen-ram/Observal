@@ -312,7 +312,7 @@ def test_tracked_install_cli_flags_validate_before_network(monkeypatch, tmp_path
             "install",
             "fixture",
             "--harness",
-            "cursor",
+            "pi",
             "--apply",
             "--dir",
             str(tmp_path),
@@ -322,12 +322,12 @@ def test_tracked_install_cli_flags_validate_before_network(monkeypatch, tmp_path
         ],
     )
     assert outcome.exit_code != 0
-    assert "Tracked install requires Claude Code" in outcome.output
+    assert "Tracked install requires a supported harness" in outcome.output
 
 
 def test_tracked_install_refuses_unsupported_harness_and_old_server(monkeypatch, tmp_path):
     with pytest.raises(CliError) as unsupported:
-        mcp._install_impl("fixture", "cursor", False, apply=True, scope="project", directory=str(tmp_path))
+        mcp._install_impl("fixture", "pi", False, apply=True, scope="project", directory=str(tmp_path))
     assert unsupported.value.category is ErrorCategory.VALIDATION
     monkeypatch.setattr(mcp.client, "resolve_registry_reference", lambda *_args: FIRST)
     monkeypatch.setattr(mcp.client, "get", lambda *_args: {"name": "Search", "namespace": "first", "slug": "search"})
@@ -609,3 +609,70 @@ def test_concurrent_standalone_upserts_keep_every_entry(monkeypatch, tmp_path):
         "standalone"
     ]
     assert {entry["id"] for entry in entries} == {FIRST, SECOND}
+
+
+@pytest.mark.parametrize("harness", ["kiro", "codex", "cursor"])
+@pytest.mark.parametrize("stage", ["readback", "receipt"])
+def test_new_tracked_mcp_install_restores_config_if_pin_cannot_be_recorded(monkeypatch, tmp_path, harness, stage):
+    from observal_cli.harness import mcp_binding
+
+    home, project = tmp_path / "home", tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("observal_cli.harness.kiro.kiro_cli_major", lambda *_args: 2)
+    monkeypatch.setattr(
+        mcp_binding,
+        "native_mcp_version",
+        {"kiro-cli": "kiro-cli 2.32.0", "codex": "codex-cli 0.163.0", "cursor-agent": "2026.10.14-941492e"}.get,
+    )
+    monkeypatch.setattr(lockfile, "local_registry_name", lambda *_args, **_kwargs: "probe")
+    monkeypatch.setattr(lockfile, "LOCKFILE_PATH", home / "lockfile.json")
+    monkeypatch.setattr(mcp.client, "resolve_registry_reference", lambda *_args: FIRST)
+    monkeypatch.setattr(
+        mcp.client,
+        "get",
+        lambda *_args: {
+            "id": FIRST,
+            "name": "Probe",
+            "namespace": "first",
+            "slug": "probe",
+            "environment_variables": [],
+            "headers": [],
+        },
+    )
+    key = "mcp_servers" if harness == "codex" else "mcpServers"
+    monkeypatch.setattr(
+        mcp.client,
+        "post_public",
+        lambda *_args: {
+            "listing_id": FIRST,
+            "selected_version": "1.0.0",
+            "local_name": "probe",
+            "config_snippet": {key: {"probe": {"command": "inert", "args": [], "env": {}}}},
+        },
+    )
+    if harness == "codex":
+        trust = home / ".codex/config.toml"
+        trust.parent.mkdir()
+        trust.write_text(f'[projects."{project.resolve()}"]\ntrust_level = "trusted"\n')
+    config = (
+        project
+        / {"kiro": ".kiro/settings/mcp.json", "codex": ".codex/config.toml", "cursor": ".cursor/mcp.json"}[harness]
+    )
+    config.parent.mkdir(parents=True)
+    original = b'\n[other]\nkeep = "yes"\n' if harness == "codex" else b'{"mcpServers":{}, "keep": true}\n'
+    config.write_bytes(original)
+    if stage == "readback":
+        monkeypatch.setattr(layer, "verify_installed_mcp", lambda *_args: ("unverified", None))
+    else:
+        monkeypatch.setattr(lockfile, "upsert_standalone", Mock(side_effect=RuntimeError("unwritable receipt")))
+    with pytest.raises(CliError) as refused:
+        mcp._install_impl(
+            "first/probe", harness, False, no_prompt=True, apply=True, directory=str(project), scope="project"
+        )
+    assert refused.value.category is ErrorCategory.UNAVAILABLE
+    assert config.read_bytes() == original
+    assert not (home / "lockfile.json").exists()

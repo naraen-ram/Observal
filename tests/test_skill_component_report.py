@@ -32,6 +32,8 @@ def _summary(observed: int, complete: int) -> dict:
         "load_attempts": 1,
         "invoked_sessions": 0,
         "invocations": 0,
+        "instructions_supplied_inferred_sessions": None,
+        "file_access_sessions": None,
         "harness_distribution": {"pi": 2},
         "version_distribution": {},
         "activation_actions": {"context_sessions": 0, "next_session_sessions": 0, "scope": "component"},
@@ -74,6 +76,75 @@ async def test_skill_report_states_what_the_evidence_does_and_does_not_show(monk
     assert "component_analysis" not in content["narrative"], "no model interpretation for skills"
     assert any(item.startswith("entered_context_not_helped") for item in content["coverage"]["limitations"])
     assert "calls" not in content["coverage"]
+
+
+@pytest.mark.asyncio
+async def test_invocation_only_skill_report_does_not_claim_a_confirmed_load(monkeypatch):
+    summary = _summary(observed=1, complete=2)
+    summary.update(
+        loaded_sessions=None,
+        confirmed_loads=None,
+        invoked_sessions=1,
+        invocations=1,
+        instructions_supplied_inferred_sessions=1,
+    )
+    monkeypatch.setattr(skill_queries, "skill_activity_summary", AsyncMock(return_value=summary))
+
+    content = await component_report.generate_component_content(_report())
+    assert "An explicit skill invocation was recorded" in content["narrative"]["summary"]
+    assert "does not establish a separately confirmed skill load" in content["narrative"]["summary"]
+    assert content["metrics"]["confirmed_loads"] is None
+    assert content["metrics"]["invocations"] == 1
+    assert content["metrics"]["instructions_supplied_inferred_sessions"] == 1
+    assert "supplied the instructions (inferred)" in content["narrative"]["summary"]
+    assert "same invocations, not additional use" in content["narrative"]["summary"]
+    assert "followed" not in content["narrative"]["summary"].lower()
+    assert all("followed" not in note.lower() for note in content["coverage"]["limitations"])
+    assert "instructions_supplied_inferred_sessions" in content["narrative"]["evidence"]
+
+
+@pytest.mark.asyncio
+async def test_successful_file_access_remains_distinct_from_invocation_and_confirmed_load(monkeypatch):
+    summary = _summary(observed=0, complete=2)
+    summary.update(loaded_sessions=None, confirmed_loads=None, load_attempts=None, file_access_sessions=1)
+    monkeypatch.setattr(skill_queries, "skill_activity_summary", AsyncMock(return_value=summary))
+    content = await component_report.generate_component_content(_report())
+    assert content["metrics"]["file_access_sessions"] == 1
+    assert content["metrics"]["invocations"] == 0 and content["metrics"]["confirmed_loads"] is None
+    assert content["coverage"]["observed_sessions"] == 0
+    assert any(x.startswith("skill_file_access_positive_only") for x in content["coverage"]["limitations"])
+    assert "At least 1 session has a successful direct SKILL.md read" in content["narrative"]["summary"]
+    assert "other read forms and absent reads remain unknown" in content["narrative"]["summary"]
+    assert content["narrative"]["evidence"]["file_access_sessions"] == 1
+    summary["file_access_sessions"] = None
+    narrative = component_report.generate_skill_sections(summary, summary["coverage"].model_dump(mode="json"))
+    assert "file read" not in narrative["summary"]
+
+
+def test_other_harness_invocation_does_not_infer_instruction_supply():
+    summary = _summary(observed=1, complete=2)
+    summary.update(invoked_sessions=1, invocations=1, instructions_supplied_inferred_sessions=None)
+    narrative = component_report.generate_skill_sections(summary, summary["coverage"].model_dump(mode="json"))
+    assert "instructions (inferred)" not in narrative["summary"]
+
+
+@pytest.mark.parametrize("observed", [0, 1])
+def test_skill_report_does_not_call_unmeasured_scopes_zero(observed):
+    summary = _summary(observed=observed, complete=3)
+    summary["coverage"] = build_skill_coverage(
+        {"present_sessions": 3},
+        {
+            "projection_complete_sessions": 3,
+            "usage_measurable_sessions": 1,
+            "scope_unmeasurable_sessions": 2,
+            "observed_sessions": observed,
+        },
+        515,
+    )
+    narrative = component_report.generate_skill_sections(summary, summary["coverage"].model_dump(mode="json"))
+    assert "other installed scopes remain unknown" in narrative["summary"].lower()
+    if not observed:
+        assert "measured skill-scope sessions" in narrative["summary"]
 
 
 @pytest.mark.asyncio

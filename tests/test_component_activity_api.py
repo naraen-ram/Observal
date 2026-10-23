@@ -221,6 +221,8 @@ def _skill_summary(state: str = "observed") -> dict:
         "load_attempts": 1,
         "invoked_sessions": 0,
         "invocations": 0,
+        "instructions_supplied_inferred_sessions": None,
+        "file_access_sessions": None,
         "harness_distribution": {"pi": 2},
         "version_distribution": {},
         "activation_actions": {"context_sessions": 0, "next_session_sessions": 0, "scope": "component"},
@@ -232,8 +234,29 @@ def test_skill_reads_skill_evidence_never_mcp_fields(api, monkeypatch):
     """Skills have their own queries, fields and coverage; owner checks are the same."""
     from services.component_activity import skill_queries
 
-    skill_summary = AsyncMock(return_value=_skill_summary() | {"invoked_sessions": None, "invocations": None})
-    skill_sessions = AsyncMock(return_value=([], None))
+    skill_summary = AsyncMock(
+        return_value=_skill_summary() | {"invoked_sessions": None, "invocations": None, "file_access_sessions": 1}
+    )
+    skill_sessions = AsyncMock(
+        return_value=(
+            [
+                {
+                    "user_id": "u",
+                    "harness": "codex",
+                    "session_id": "s",
+                    "last_event_time": "2026-10-17T00:00:00Z",
+                    "projection_state": "complete",
+                    "source_state": "available",
+                    "available": True,
+                    "confirmed_loads": None,
+                    "load_attempts": None,
+                    "invocations": 0,
+                    "file_accessed": True,
+                }
+            ],
+            None,
+        )
+    )
     monkeypatch.setattr(skill_queries, "skill_activity_summary", skill_summary)
     monkeypatch.setattr(skill_queries, "skill_activity_sessions", skill_sessions)
     response = api.client.get(f"/api/v1/components/skill/{LISTING_ID}/activity/summary")
@@ -241,12 +264,16 @@ def test_skill_reads_skill_evidence_never_mcp_fields(api, monkeypatch):
     body = response.json()
     assert (body["loaded_sessions"], body["confirmed_loads"], body["load_attempts"]) == (1, 1, 1)
     assert (body["invoked_sessions"], body["invocations"]) == (None, None), "unknown, not zero"
+    assert body["instructions_supplied_inferred_sessions"] is None
+    assert body["file_access_sessions"] == 1
     for mcp_only in ("observed_calls", "result_states"):
         assert mcp_only not in body
     assert "calls" not in body["coverage"] and "evidence" in body["coverage"]
     assert any(item.startswith("entered_context_not_helped") for item in body["coverage"]["limitations"])
     api.summary.assert_not_awaited()  # the MCP query is never consulted for a skill
-    assert api.client.get(f"/api/v1/components/skill/{LISTING_ID}/activity/sessions").status_code == 200
+    sessions_response = api.client.get(f"/api/v1/components/skill/{LISTING_ID}/activity/sessions")
+    assert sessions_response.status_code == 200
+    assert sessions_response.json()["sessions"][0]["file_accessed"] is True
     api.sessions.assert_not_awaited()
     skill_sessions.assert_awaited_once()
     # Same visibility and ownership gate as MCP: a reviewer who is not an owner is refused.
@@ -386,7 +413,7 @@ async def test_activity_sql_binds_scoped_key_current_version_and_component(monke
     assert "a.component_id = {component_id:String}" in summary_sql
     assert "countIf(status = 'failed') = 0" in summary_sql
     assert captured[0][1]["param_projection_version"] == queries.publication_version()
-    assert captured[0][1]["param_supported"] == "['claude-code','pi']"
+    assert captured[0][1]["param_supported"] == "['claude-code','codex','pi']"
     page_sql, page_params = captured[-1]
     # Source availability reads only sizes/flags server-side; raw text is never selected.
     assert "empty(raw_line)" in page_sql

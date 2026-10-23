@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -277,14 +278,38 @@ class TestChecks:
     def test_codex_reports_disabled_hook_flag(self, tmp_path: Path):
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "config.toml").write_text("codex_hooks = false\n", encoding="utf-8")
+        (codex_dir / "config.toml").write_text("[features]\nhooks = false\n", encoding="utf-8")
         issues: list[str] = []
         warnings: list[str] = []
 
         _check_codex(issues, warnings)
 
-        assert any("codex_hooks = false" in issue for issue in issues)
+        assert any("[features] hooks = false" in issue for issue in issues)
         assert any("Codex session push hooks not installed" in warning for warning in warnings)
+
+    def test_codex_reports_invalid_config_without_echoing_values(self, tmp_path: Path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text('model = "private-value"\nmodel = "duplicate"\n', encoding="utf-8")
+        issues: list[str] = []
+
+        _check_codex(issues, [])
+
+        assert len(issues) == 1
+        assert "invalid Codex TOML" in issues[0]
+        assert "private-value" not in issues[0]
+
+    def test_codex_reports_ignored_legacy_root_flag(self, tmp_path: Path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text("codex_hooks = true\n", encoding="utf-8")
+        issues: list[str] = []
+        warnings: list[str] = []
+
+        _check_codex(issues, warnings)
+
+        assert issues == []  # ignored is not disabled; Codex may have hooks enabled by default
+        assert any("top-level `codex_hooks` is ignored" in warning for warning in warnings)
 
     def test_copilot_warns_when_vscode_exists_without_hooks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
@@ -614,7 +639,9 @@ class TestPatchFunctions:
 
         assert _patch_codex(dry_run=False) is True
 
-        assert "codex_hooks = true" in (codex_dir / "config.toml").read_text(encoding="utf-8")
+        config = (codex_dir / "config.toml").read_text(encoding="utf-8")
+        assert tomllib.loads(config)["features"]["hooks"] is True
+        assert "codex_hooks" not in tomllib.loads(config)
         groups = read_json(codex_dir / "hooks.json")["hooks"]["Stop"]
         assert any(group.get("hooks", [{}])[0].get("command") == "foreign" for group in groups)
         assert any(
@@ -622,6 +649,38 @@ class TestPatchFunctions:
             for group in groups
             for hook in group.get("hooks", [])
         )
+
+    @pytest.mark.parametrize(
+        "original",
+        [
+            'model = "scratch"\n\n[features]\nhooks = false # retain this note\nfast_mode = true\n\n[mcp_servers.safe]\ncommand = "echo"\n',
+            'model = "scratch"\n\n[features]\nfast_mode = true\n\n[mcp_servers.safe]\ncommand = "echo"\n',
+            'codex_hooks = true\nmodel = "scratch"\n\n[mcp_servers.safe]\ncommand = "echo"\n',
+        ],
+    )
+    def test_patch_codex_preserves_other_toml_and_is_idempotent(self, tmp_path: Path, original: str):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text(original, encoding="utf-8")
+
+        assert _patch_codex(dry_run=False) is True
+        text = (codex_dir / "config.toml").read_text(encoding="utf-8")
+        parsed = tomllib.loads(text)
+        assert parsed["features"]["hooks"] is True
+        assert parsed["model"] == "scratch"
+        assert parsed["mcp_servers"]["safe"]["command"] == "echo"
+        assert "codex_hooks" not in parsed
+        assert _patch_codex(dry_run=False) is False
+        assert (codex_dir / "config.toml").read_text(encoding="utf-8") == text
+
+    def test_patch_codex_rejects_invalid_config_before_writing_hooks(self, tmp_path: Path):
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "config.toml").write_text("[features]\nhooks = 'false'\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="boolean"):
+            _patch_codex(dry_run=False)
+        assert not (codex_dir / "hooks.json").exists()
 
     def test_patch_copilot_writes_project_hooks_and_wrapper(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)

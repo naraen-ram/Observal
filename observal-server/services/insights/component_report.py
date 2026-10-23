@@ -100,11 +100,13 @@ async def _generate_skill_content(report: InsightReport) -> dict:
                 "load_attempts",
                 "invoked_sessions",
                 "invocations",
+                "instructions_supplied_inferred_sessions",
                 "harness_distribution",
                 "version_distribution",
                 "activation_actions",
             )
-        },
+        }
+        | {"file_access_sessions": summary.get("file_access_sessions")},
         "narrative": generate_skill_sections(summary, coverage),
         "coverage": coverage,
         "sessions_analyzed": summary["present_sessions"],
@@ -115,17 +117,53 @@ def generate_skill_sections(summary: dict, coverage: dict) -> dict:
     """Plain-language conclusion and evidence breakdown, from counts alone."""
     state = coverage["attribution_state"]
     if state == "observed":
-        conclusion = (
-            "The skill's instructions entered context in processed present sessions "
-            "(a confirmed load or an invocation). This does not show the skill was followed or helped."
-        )
+        if summary["invocations"] and not summary["confirmed_loads"]:
+            conclusion = (
+                "An explicit skill invocation was recorded in processed present sessions. "
+                "This does not establish a separately confirmed skill load or measure effectiveness."
+            )
+        else:
+            conclusion = (
+                "The skill's instructions entered context in processed present sessions "
+                "(a confirmed load or an invocation). Effectiveness is not measured."
+            )
+        if summary.get("instructions_supplied_inferred_sessions"):
+            count = summary["instructions_supplied_inferred_sessions"]
+            conclusion += (
+                f" In {count} {'session' if count == 1 else 'sessions'}, Codex's native skill selection "
+                "supplied the instructions (inferred). This describes those same invocations, not additional "
+                "use or a separately confirmed load."
+            )
+        if "skill_scope_not_recorded" in coverage["reasons"]:
+            conclusion += " Other installed scopes remain unknown."
     elif state == "no_observed_skill_use":
+        if "skill_scope_not_recorded" in coverage["reasons"]:
+            conclusion = (
+                "No confirmed load or invocation in the measured skill-scope sessions; other installed scopes "
+                "remain unknown. This does not prove the skill was never used."
+            )
+        else:
+            conclusion = (
+                "No confirmed load or invocation in processed present sessions; this does not prove the skill "
+                "was never used."
+            )
+    elif summary["available_sessions"] and coverage["projection"]["projection_complete_sessions"]:
         conclusion = (
-            "No confirmed load or invocation in processed present sessions; this does not prove the skill "
-            "was never used."
+            "The skill was offered in processed, verified-present sessions, but those sessions do not establish "
+            "whether its instructions entered context. No use conclusion can be drawn."
+            if not summary.get("file_access_sessions")
+            else "The skill was offered in processed, verified-present sessions. Native selection and confirmed "
+            "skill loads are not established; file access is reported separately below."
         )
     else:
-        conclusion = "Skill evidence is unavailable for this cohort; no use conclusion can be drawn."
+        conclusion = "Skill-use evidence is unavailable for this cohort; no use conclusion can be drawn."
+    if summary.get("file_access_sessions"):
+        count = summary["file_access_sessions"]
+        conclusion += (
+            f" At least {count} {'session has' if count == 1 else 'sessions have'} a successful direct "
+            "SKILL.md read. This file access is separate from invocation and confirmed load; other read "
+            "forms and absent reads remain unknown."
+        )
     processed = coverage["projection"]["projection_complete_sessions"]
     return {
         "summary": conclusion,
@@ -135,6 +173,8 @@ def generate_skill_sections(summary: dict, coverage: dict) -> dict:
             "confirmed_loads": summary["confirmed_loads"],
             "unconfirmed_load_attempts": summary["load_attempts"],
             "invoked": summary["invocations"],  # None: the harness records no invocation origin
+            "instructions_supplied_inferred_sessions": summary.get("instructions_supplied_inferred_sessions"),
+            "file_access_sessions": summary.get("file_access_sessions"),
             "activated": summary["activation_actions"],  # configuration actions, not use
             "unknown": list(coverage["reasons"]),
         },

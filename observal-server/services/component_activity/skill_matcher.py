@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 
     from services.session_parsers.skill_evidence import SkillEvidence
 
-SKILL_MATCHER_VERSION = 2
+# 5: bounded native Codex successful SKILL.md access, separate from loads/invocations.
+# Earlier publications must be replayed; absent reads cannot become zero access.
+SKILL_MATCHER_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -45,8 +47,8 @@ def match_skill_evidence(
         if fact.kind == "load" and fact.result_state == "unknown":
             unknown += 1
         candidates = candidates_by_hash.get(hashes_by_offset.get(fact.source_line_offset, ""), ())
-        matches = {
-            (c.get("component_id"), c.get("component_version_id") or "")
+        matched_candidates = [
+            c
             for c in candidates
             if c.get("identity_status") == "resolved"
             and c.get("verification_status") == "verified"
@@ -55,11 +57,17 @@ def match_skill_evidence(
             and fact.location_sha256
             and c.get("location_sha256") == fact.location_sha256
             and c.get("component_id")
-        }
-        if len({component for component, _ in matches}) > 1:
+        ]
+        matches = {(c["component_id"], c.get("component_version_id") or "") for c in matched_candidates}
+        # File access needs one exact pinned listing/version, never the older
+        # availability/invocation fallback of a listing with unknown version.
+        if len({component for component, _ in matches}) > 1 or (
+            fact.kind == "file_access" and len(matched_candidates) > 1
+        ):
             collisions += 1
             continue
-        if not matches:
+        if not matches or (fact.kind == "file_access" and not next(iter(matches))[1]):
+            # File access cannot resolve to an unpinned listing/version.
             unmatched += 1
             continue
         component_id = next(iter(matches))[0]

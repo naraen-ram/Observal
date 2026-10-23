@@ -45,8 +45,8 @@ function DistributionSection({ versions, harnesses }: { versions?: Record<string
 
 /** A count that is either measured, not measured for this period, or never recorded by the cohort's harnesses. */
 function SkillCount({ value, measured, partial = false }: { value: number | null | undefined; measured: boolean; partial?: boolean }) {
-  if (value === null) return <>Not recorded</>;
   if (!measured || value === undefined) return <>Not measured</>;
+  if (value === null) return <>Not recorded</>;
   return <>{value}{partial && <span className="block text-xs font-normal text-muted-foreground">Only harnesses that record it</span>}</>;
 }
 
@@ -55,24 +55,38 @@ function SkillReport({ report }: { report: InsightReport }) {
   const metrics = report.metrics as unknown as SkillInsightMetrics | null;
   const narrative = report.narrative as unknown as SkillInsightNarrative | null;
   const measured = !!coverage && coverage.usage_rate_denominator_sessions > 0;
+  const availabilityMeasured = !!coverage && coverage.projection.projection_complete_sessions > 0;
   const notRecorded = [
-    metrics?.available_sessions === null ? "which skill files were advertised" : null,
-    metrics?.invoked_sessions === null ? "explicit invocations" : null,
+    availabilityMeasured && metrics?.available_sessions === null ? "which skill files were advertised" : null,
+    availabilityMeasured && metrics?.loaded_sessions === null ? "skill loads" : null,
+    availabilityMeasured && metrics?.invoked_sessions === null ? "explicit invocations" : null,
   ].filter(Boolean);
   return (
     <ComponentReportFrame report={report}>
         <EvidencePanel summary={narrative?.summary} stats={[
           { label: "Present sessions", value: metrics?.present_sessions ?? "—" },
-          { label: "Confirmed loads", value: <SkillCount value={metrics?.loaded_sessions} measured={measured} />, note: "Sessions where instructions entered context" },
-          { label: "Invocations", value: <SkillCount value={metrics?.invoked_sessions} measured={measured} partial={coverage?.reasons.includes("invoked_not_recorded_on_some_harnesses")} /> },
-          { label: "Offered", value: <SkillCount value={metrics?.available_sessions} measured={measured} partial={coverage?.reasons.includes("available_not_recorded_on_some_harnesses")} /> },
+          { label: "Confirmed loads", value: <SkillCount value={metrics?.loaded_sessions} measured={availabilityMeasured} partial={coverage?.reasons.includes("load_not_recorded_on_some_harnesses")} />, note: "Sessions where instructions entered context" },
+          { label: "Invocations", value: <SkillCount value={metrics?.invoked_sessions} measured={availabilityMeasured} partial={coverage?.reasons.includes("invoked_not_recorded_on_some_harnesses")} /> },
+          { label: "Offered", value: <SkillCount value={metrics?.available_sessions} measured={availabilityMeasured} partial={coverage?.reasons.includes("available_not_recorded_on_some_harnesses")} /> },
         ]}>
+          {metrics && "file_access_sessions" in metrics && (
+            <p className="max-w-[70ch] text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">Skill file accessed: {metrics.file_access_sessions == null ? "Unknown (not zero)." : `At least ${metrics.file_access_sessions} ${metrics.file_access_sessions === 1 ? "session" : "sessions"}.`}</span>{" "}
+              Only successful direct reads of the exact verified project SKILL.md are included. This is not an invocation or confirmed skill load; other read forms and absent reads have no completeness proof or denominator.
+            </p>
+          )}
+          {metrics?.instructions_supplied_inferred_sessions != null && (
+            <p className="max-w-[70ch] text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">Instructions supplied (inferred): {metrics.instructions_supplied_inferred_sessions} {metrics.instructions_supplied_inferred_sessions === 1 ? "session" : "sessions"}.</span>{" "}
+              Native Codex project-skill selections only. These are the same invocations, not additional use or confirmed loads; manual file reads do not count toward inferred instruction supply.
+            </p>
+          )}
           {measured && !!metrics?.load_attempts && <p className="text-sm text-muted-foreground">{metrics.load_attempts} load {metrics.load_attempts === 1 ? "attempt" : "attempts"} failed or had no confirmed result, and {metrics.load_attempts === 1 ? "is" : "are"} not counted as {metrics.load_attempts === 1 ? "a load" : "loads"}.</p>}
           {notRecorded.length > 0 && <p className="text-sm text-muted-foreground">The harnesses in this cohort do not record {notRecorded.join(" or ")}, so those counts are unknown rather than zero.</p>}
-          {!measured && <p>Skill evidence is unavailable for this period; missing measurements do not imply no use.</p>}
+          {!measured && <p>{availabilityMeasured ? "Being offered does not establish a skill load or an invocation." : "Skill evidence is unavailable for this period; missing measurements do not imply no use."}</p>}
         </EvidencePanel>
         <CoveragePanel coverage={coverage}>
-          {coverage && <p>{coverage.observed_sessions} {coverage.observed_sessions === 1 ? "session" : "sessions"} had a confirmed load or an invocation. {coverage.evidence.collision_facts} ambiguous and {coverage.evidence.unmatched_facts} unmatched skill records were not counted.</p>}
+          {coverage && <p>{measured ? `${coverage.observed_sessions} ${coverage.observed_sessions === 1 ? "session" : "sessions"} had a confirmed load or an invocation.` : "No session in this cohort has measurable skill-use evidence."} {coverage.evidence.collision_facts} ambiguous and {coverage.evidence.unmatched_facts} unmatched skill records were not counted.</p>}
         </CoveragePanel>
         <DistributionSection versions={metrics?.version_distribution} harnesses={metrics?.harness_distribution} />
         <SkillEvidenceBreakdown metrics={metrics} coverage={coverage} />

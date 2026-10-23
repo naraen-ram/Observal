@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
     from observal_cli.discovery.models import AdapterDiscoveryResult
 
+    from .mcp_binding import McpConfigUndo
+
 
 # ── Feature → Method mapping ──────────────────────────────────────
 
@@ -36,6 +38,7 @@ METHOD_FEATURE_MAP: dict[str, str] = {
     "get_hook_spec": "hooks",
     "scan_home": "mcp_servers",
     "scan_project": "mcp_servers",
+    "configure_tracked_mcp": "mcp_servers",
 }
 
 
@@ -216,6 +219,10 @@ class HarnessAdapter(Protocol):
     @property
     def harness_name(self) -> str:
         """Canonical harness name (e.g. 'claude-code', 'cursor')."""
+        ...
+
+    def configure_tracked_mcp(self, scope: str, directory: str, alias: str, snippet: dict) -> McpConfigUndo | None:
+        """Configure one tracked MCP in native settings, failing before a receipt on ambiguity."""
         ...
 
     def scan_home(self, home: Path | None = None) -> ScanResult:

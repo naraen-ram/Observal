@@ -103,6 +103,8 @@ def _text(content: object) -> str:
 class ClaudeCodeSkillEvidenceExtractor:
     # The skill listing has names only, so availability cannot be tied to a file.
     observed_kinds: frozenset = frozenset({"load", "invoked"})
+    observed_scopes: frozenset = frozenset({"project", "user"})
+    selected_instructions_supplied = False
 
     def extract(self, rows: Sequence[Mapping[str, object]]) -> SkillEvidenceExtraction:
         records: list[tuple[int, dict, Mapping[str, object]]] = []

@@ -1119,14 +1119,19 @@ def _install_impl(
     scope: str | None = None,
 ):
     optic.trace("mcp_id={}, harness={}, version={}", mcp_id, harness, version)
-    if apply and (harness != "claude-code" or directory is None or scope not in {"project", "user"} or raw):
-        fail(
-            ErrorCategory.VALIDATION,
-            "Tracked install requires Claude Code, --dir, --scope and no --raw.",
-            operation="Install MCP server",
-            resource="tracked install",
-            remediation="Use --apply --harness claude-code --dir DIR --scope project|user, or omit --apply for a snippet.",
-        )
+    if apply:
+        from observal_cli.harness import ensure_loaded, get_adapter
+
+        ensure_loaded()
+        adapter = get_adapter(harness)
+        if not adapter or directory is None or scope not in adapter.tracked_mcp_scopes or raw:
+            fail(
+                ErrorCategory.VALIDATION,
+                "Tracked install requires a supported harness, --dir, --scope and no --raw.",
+                operation="Install MCP server",
+                resource="tracked install",
+                remediation="Use --harness claude-code|kiro|codex|cursor with --dir DIR and --scope project|user; otherwise omit --apply.",
+            )
     import json as _json
 
     resolved = client.resolve_registry_reference("mcp", mcp_id)
@@ -1296,22 +1301,17 @@ def _install_impl(
 
         selected_version = result.get("selected_version")
         alias = result.get("local_name")
-        command = snippet.get("command")
         if (
             not isinstance(selected_version, str)
             or not selected_version
             or not isinstance(alias, str)
-            or not alias
-            or not isinstance(command, list)
-            or command[:3] != ["claude", "mcp", "add"]
-            or len(command) < 4
-            or command[3] != alias
+            or alias != local_name
             or (version and version != selected_version)
             or str(result.get("listing_id") or resolved) != str(resolved)
         ):
             fail(
                 ErrorCategory.UNAVAILABLE,
-                "Server did not return a verifiable MCP install command and version.",
+                "Server did not return a verifiable MCP configuration, alias and version.",
                 operation="Install MCP server",
                 resource="install configuration",
                 remediation="Update the server and retry; the snippet mode remains available.",
@@ -1319,38 +1319,40 @@ def _install_impl(
         target_dir = Path(directory).resolve()
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
-            installed = subprocess.run(
-                [*command[:3], "--scope", scope, *command[3:]],
-                cwd=target_dir,
-                capture_output=True,
-                text=True,
-            )
-        except OSError as error:
+            undo = adapter.configure_tracked_mcp(scope, str(target_dir), alias, snippet)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             fail(
                 ErrorCategory.UNAVAILABLE,
-                "MCP setup could not run.",
+                "Native MCP setup could not be verified.",
                 operation="Install MCP server",
-                resource="Claude Code",
-                remediation="Check the Claude CLI and target directory.",
-                detail=repr(error),
+                resource=f"{harness} MCP settings",
+                remediation="Check effective config, scope, trust and alias collisions; no registry identity was recorded.",
+                detail=type(error).__name__,
             )
-        if installed.returncode != 0:
-            fail(
-                ErrorCategory.UNAVAILABLE,
-                "MCP setup command failed.",
-                operation="Install MCP server",
-                resource="Claude Code",
-                remediation="Check the Claude CLI and retry.",
-            )
+
+        def restore_unpinned_config() -> bool:
+            if undo is None:
+                return False  # Claude Code retains its native CLI configuration on failure.
+            try:
+                return undo.rollback()
+            except (OSError, ValueError):
+                return False  # A concurrent edit must never be overwritten.
+
         status, integrity = verify_installed_mcp(harness, scope, str(target_dir), alias)
         if status != "verified" or integrity is None:
+            restored = restore_unpinned_config()
             fail(
                 ErrorCategory.UNAVAILABLE,
                 "Installed MCP entry could not be verified.",
                 operation="Install MCP server",
-                resource="Claude Code MCP settings",
-                remediation="Check the effective MCP config and retry; no registry identity was recorded.",
+                resource=f"{harness} MCP settings",
+                remediation=(
+                    "Original settings restored; no registry identity was recorded."
+                    if restored
+                    else "Review the native MCP config manually; no registry identity was recorded."
+                ),
             )
+        receipt_written = False
         try:
             upsert_standalone(
                 harness,
@@ -1366,15 +1368,21 @@ def _install_impl(
                 local_name=alias,
                 mcp_integrity=integrity,
             )
+            receipt_written = True
             snapshot_hash = ensure_local_snapshot(project_dir=str(target_dir))
         except (OSError, RuntimeError, ValueError) as error:
+            restored = restore_unpinned_config() if not receipt_written else False
             fail(
                 ErrorCategory.UNAVAILABLE,
                 "MCP configuration succeeded but tracking or snapshot failed.",
                 operation="Install MCP server",
                 resource="Observal lockfile or snapshot",
-                remediation="Repair local installation state and retry.",
-                detail=repr(error),
+                remediation=(
+                    "Original settings restored; no registry identity was recorded."
+                    if restored
+                    else "Inspect the native config and lockfile; the snapshot was not verified."
+                ),
+                detail=type(error).__name__,
             )
         snapshot = get_local_snapshot()
         snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -1677,14 +1685,15 @@ def install(
     env_file: str | None = typer.Option(None, "--env-file", help="Path to .env file for environment variables"),
     no_prompt: bool = typer.Option(False, "--no-prompt", "-y", help="Skip interactive prompts"),
     apply: bool = typer.Option(
-        False, "--apply", help="Configure and track a Claude Code MCP instead of printing a snippet"
+        False, "--apply", help="Configure and track a verified MCP (Claude Code, Kiro CLI, Codex, Cursor)"
     ),
     directory: str | None = typer.Option(None, "--dir", "-d", help="Explicit target directory for --apply"),
     scope: str | None = typer.Option(None, "--scope", help="Explicit project or user install scope for --apply"),
     output: OutputMode = typer.Option("table", "--output", "-o", help="Output format: table or json"),
 ):
-    """Generate a snippet, or with --apply configure and track a Claude Code MCP.
+    """Generate a snippet, or track a scoped stdio MCP in Claude Code, Kiro CLI, Codex, or Cursor.
 
+    --apply requires --dir and --scope project|user; a verified install is not proof of an executed call.
     Produces harness-specific configuration that you paste into your editor's
     MCP settings file. Prompts for required environment variables and
     headers interactively (unless --raw or --no-prompt is used).
